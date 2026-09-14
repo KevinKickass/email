@@ -2,7 +2,7 @@ use crate::Result;
 use lettre::{
     message::{header::ContentType, Mailbox},
     transport::smtp::authentication::Credentials as SmtpCredentials,
-    Message, SmtpTransport, Transport,
+    Message, SmtpTransport,
 };
 use mailparse::MailHeaderMap;
 use serde::{Deserialize, Serialize};
@@ -127,9 +127,11 @@ impl Credentials {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Folder {
-    name: String,
-    label: String,
-    selectable: bool,
+    pub name: String,
+    pub label: String,
+    pub selectable: bool,
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -158,14 +160,23 @@ pub struct Snapshot {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Draft {
+    #[serde(default = "new_id")]
+    pub id: String,
+    #[serde(default)]
+    pub revision: u64,
     pub to: String,
     pub subject: String,
     pub body: String,
 }
 
+pub fn new_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
 type Session = imap::Session<native_tls::TlsStream<TcpStream>>;
-fn connect(c: &Credentials) -> Result<Session> {
+pub(crate) fn connect(c: &Credentials) -> Result<Session> {
     let a = &c.account;
     // DNS resolution may take longer than the per-socket timeout. Runs on a blocking worker.
     let addresses = (a.imap_host.as_str(), a.imap_port)
@@ -221,11 +232,8 @@ pub fn folders(c: &Credentials) -> Result<Vec<Folder>> {
         .iter()
         .map(|n| Folder {
             name: n.name().into(),
-            label: if n.name().eq_ignore_ascii_case("INBOX") {
-                "Posteingang".into()
-            } else {
-                n.name().into()
-            },
+            label: crate::folders::decode_name(n.name()),
+            role: crate::folders::role(n.name(), n.attributes()),
             selectable: !n
                 .attributes()
                 .iter()
@@ -237,7 +245,7 @@ pub fn folders(c: &Credentials) -> Result<Vec<Folder>> {
     Ok(result)
 }
 
-fn validate_folder(folder: &str) -> Result<()> {
+pub(crate) fn validate_folder(folder: &str) -> Result<()> {
     if folder.is_empty() || folder.chars().any(char::is_control) {
         Err("Ungültiger Ordnername.".into())
     } else {
@@ -321,7 +329,7 @@ pub fn list(c: &Credentials, folder: &str) -> Result<Snapshot> {
     })
 }
 
-fn verify_validity(actual: Option<u32>, expected: u32, uid: u32) -> Result<()> {
+pub(crate) fn verify_validity(actual: Option<u32>, expected: u32, uid: u32) -> Result<()> {
     if uid == 0 || expected == 0 || actual != Some(expected) {
         Err("Der Ordner hat sich auf dem Server geändert. Bitte zuerst aktualisieren.".into())
     } else {
@@ -449,7 +457,7 @@ pub fn set_flag(
     Ok(())
 }
 
-fn smtp(c: &Credentials) -> Result<SmtpTransport> {
+pub(crate) fn smtp(c: &Credentials) -> Result<SmtpTransport> {
     let a = &c.account;
     let builder = match a.smtp_security {
         Security::Tls => SmtpTransport::relay(&a.smtp_host),
@@ -473,7 +481,7 @@ pub fn test_smtp(c: &Credentials) -> Result<()> {
     }
 }
 
-fn build_message(a: &Account, draft: &Draft) -> Result<Message> {
+pub(crate) fn build_message(a: &Account, draft: &Draft) -> Result<Message> {
     if draft.body.len() > MAX_MESSAGE as usize {
         return Err("Die Nachricht ist zu groß (maximal 10 MiB).".into());
     }
@@ -487,7 +495,8 @@ fn build_message(a: &Account, draft: &Draft) -> Result<Message> {
                 .parse()
                 .map_err(|_| "Absenderadresse ist ungültig.")?,
         ))
-        .subject(&draft.subject);
+        .subject(&draft.subject)
+        .message_id(Some(format!("<{}@email.local>", draft.id)));
     for recipient in draft.to.split(',').map(str::trim) {
         builder = builder.to(recipient.parse().map_err(|_| {
             "Eine Empfängeradresse ist ungültig. Mehrere Adressen mit Komma trennen."
@@ -497,12 +506,6 @@ fn build_message(a: &Account, draft: &Draft) -> Result<Message> {
         .header(ContentType::TEXT_PLAIN)
         .body(draft.body.clone())
         .map_err(|_| "Nachricht konnte nicht erstellt werden.".into())
-}
-
-pub fn send(c: &Credentials, draft: &Draft) -> Result<()> {
-    let message = build_message(&c.account, draft)?;
-    smtp(c)?.send(&message).map_err(|_| "SMTP hat den Versand nicht bestätigt. Der Entwurf bleibt gespeichert. Bei einem Verbindungsabbruch kann die Nachricht trotzdem angenommen worden sein; bitte vor erneutem Senden prüfen.".to_string())?;
-    Ok(())
 }
 
 pub fn probe_caldav(url: &str) -> Result<String> {
@@ -566,9 +569,9 @@ pub fn probe_caldav(url: &str) -> Result<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    fn account() -> Account {
+    pub(crate) fn account() -> Account {
         Account {
             name: "Test".into(),
             email: "sender@example.org".into(),
@@ -627,6 +630,8 @@ mod tests {
     #[test]
     fn compose_validates_recipients_and_keeps_text_utf8() {
         let draft = Draft {
+            id: new_id(),
+            revision: 0,
             to: "one@example.org, two@example.org".into(),
             subject: "Grüße".into(),
             body: "Hallo Welt".into(),

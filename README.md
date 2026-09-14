@@ -4,7 +4,7 @@ A classic desktop email client with a ribbon, folder tree, message list and read
 pane. An original interface inspired by familiar Outlook 2010-era workflows, with
 German and English language support.
 
-**Version 0.1.2 — technical preview.** This is not yet a production-ready replacement
+**Version 0.2.0 — technical preview.** This is not yet a production-ready replacement
 for customer deployments. The browser preview uses clearly labelled sample data;
 real email connections are available in the Tauri desktop app.
 
@@ -57,11 +57,24 @@ before running `npm run desktop`; Tauri starts its own development server.
 - Decode MIME character sets and encoded subjects; display plain text and list
   attachment filenames. External images and active content are not loaded.
 - Compose, reply and forward plain-text email over SMTP.
-- One local draft per account, saved manually, when closing the compose window and
-  before sending. Failed sends retain the draft.
-- Cache received lists and previously opened message bodies. If a later refresh
-  fails during the session, cached messages appear with an offline indicator and
-  the actual error.
+- Multiple local drafts per account, with debounced autosave, revision checks and
+  recovery through **Local drafts & delivery**. Closing the app waits for the latest
+  edit to be saved; a failed save keeps the window open. Older single drafts migrate
+  automatically. Drafts are local, not synchronised to the server's Drafts folder.
+- Durable delivery history. Accepted messages are copied to a selected IMAP folder
+  with the same MIME bytes and Message-ID used by SMTP. Failed copies can be retried
+  without sending SMTP again. Interrupted or ambiguous SMTP attempts require review
+  before creating a new draft; they are never automatically resent.
+- Server-side archive, trash, junk and arbitrary folder moves using `UID MOVE`, or
+  `UID COPY` / `UID STORE` / targeted `UID EXPUNGE` when UIDPLUS is available. Servers
+  supporting neither extension are refused. The app never expunges a whole folder.
+  Modified UTF-7 labels are decoded, while original wire names are retained.
+  SPECIAL-USE roles and common names enable shortcuts; use **Move to folder** when
+  no unambiguous role can be found. Permanent deletion is not implemented.
+- Offline startup from cached folders, message lists and previously opened bodies.
+  Saved credentials reconnect automatically. Session-only accounts stay usable
+  offline until credentials are entered through account setup. Refresh failures
+  retain cached messages with an offline indicator and the actual error.
 - Month calendar preview. Save a CalDAV URL and probe its endpoint without
   credentials; limit HTTPS redirects and reject HTTP downgrades. Calendar
   synchronisation is not implemented yet.
@@ -190,26 +203,32 @@ cargo clippy --locked --manifest-path src-tauri/Cargo.toml --lib -- -D warnings
 ```
 
 Tests cover persistence, rollback, UID isolation, MIME decoding, recipient
-validation, unsafe CalDAV URLs, language selection, update opt-in and release
+validation, draft revision ordering, crash recovery, copy-only delivery retries,
+UIDPLUS moves, quoted mailbox names, APPEND literals, offline startup, window-close
+persistence, unsafe CalDAV URLs, language selection, update opt-in and release
 manifest assembly. The STARTTLS test uses a local test server and verifies that a
 rejected TLS upgrade never sends credentials. No real email account is required.
 Provider integration and Windows GUI behaviour still need separate testing.
 
 ## Roadmap to production use
 
-1. Complete incremental IMAP synchronisation, folder subscriptions, IDLE, offline
-   startup, cache cleanup and reconnection.
-2. Multiple accounts and drafts, autosave and recovery after an app crash.
-3. Reliable IMAP APPEND copies after SMTP delivery and an outbox that handles
-   uncertain delivery confirmations. **Sent copies are not saved yet.**
-4. Attachment downloads and sending, safe HTML rendering and fuller address handling.
-5. Server-side moves/deletes, Modified UTF-7 folder names and SPECIAL-USE folder roles.
-   Moving and deleting messages currently work only in the demo.
-6. CalDAV discovery, authentication, calendar listing, synchronisation, recurrence,
+1. Incremental IMAP synchronisation, folder subscriptions, IDLE, automatic retry
+   backoff and cache cleanup. The current view fetches the latest 100 headers.
+2. Multiple active accounts, server-synchronised drafts and delivery-history retention.
+3. Attachment downloads and sending, safe HTML rendering and fuller address handling.
+4. Folder creation, renaming and subscription management; persistent role overrides.
+5. CalDAV discovery, authentication, calendar listing, synchronisation, recurrence,
    time zones and reminders. An IMAP host does not automatically provide CalDAV.
    See [RFC 6764](https://www.rfc-editor.org/rfc/rfc6764).
-7. Search indexes for large mailboxes, backup/restore, migrations, platform code
+6. Search indexes for large mailboxes, backup/restore, migrations, platform code
    signing and testing across supported Windows and Linux versions.
+
+Delivery history retains message content locally. Completed entries release their
+raw MIME copy but retain their draft and delivery marker to prevent accidental
+resubmission. Sent-copy retries search by Message-ID before APPEND; this reduces
+duplicates after a lost response, but cannot make SMTP and IMAP one atomic operation
+or prevent every race with a provider that independently archives outgoing mail.
+After a partially confirmed folder move, refresh both folders before trying again.
 
 The current `imap-proto` dependency emits a Rust future-incompatibility warning.
 Update or replace the IMAP library before production release and test protocol

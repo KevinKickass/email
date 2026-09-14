@@ -1015,8 +1015,9 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "email"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "imap",
  "keyring",
  "lettre",
@@ -1031,6 +1032,8 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]

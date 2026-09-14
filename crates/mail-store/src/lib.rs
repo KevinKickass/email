@@ -40,6 +40,39 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
+
+    pub fn batch(&self, changes: &[(String, Option<Vec<u8>>)]) -> Result<()> {
+        let tx = self.0.begin_write()?;
+        {
+            let mut table = tx.open_table(RECORDS)?;
+            for (key, value) in changes {
+                match value {
+                    Some(bytes) => {
+                        table.insert(key.as_str(), bytes.as_slice())?;
+                    }
+                    None => {
+                        table.remove(key.as_str())?;
+                    }
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn scan<T: DeserializeOwned>(&self, prefix: &str) -> Result<Vec<T>> {
+        let tx = self.0.begin_read()?;
+        let table = tx.open_table(RECORDS)?;
+        let mut values = Vec::new();
+        for entry in table.range(prefix..)? {
+            let (key, value) = entry?;
+            if !key.value().starts_with(prefix) {
+                break;
+            }
+            values.push(serde_json::from_slice(value.value())?);
+        }
+        Ok(values)
+    }
 }
 
 /// Account identity + folder + UIDVALIDITY prevent reusing bodies after UID resets.

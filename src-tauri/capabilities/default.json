@@ -2,6 +2,13 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Lokales Hauptfenster; keine Shell-, Dateisystem- oder HTTP-Plugins.",
-  "windows": ["main"],
-  "permissions": ["core:default", "updater:default", "process:allow-restart"]
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "updater:default",
+    "process:allow-restart",
+    "core:window:allow-destroy"
+  ]
 }

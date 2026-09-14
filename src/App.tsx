@@ -6,6 +6,9 @@ import {
   type ReactNode,
 } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { createDraftWriter } from "./draftWriter";
+import LocalWorkDialog from "./LocalWorkDialog";
 import SettingsDialog from "./SettingsDialog";
 import { useUpdates } from "./updates";
 import { useI18n } from "./i18n";
@@ -47,6 +50,8 @@ import {
   type Folder,
   type Mail,
   type Draft,
+  type Submission,
+  accountIdentity,
   emptyAccount,
   demoFolders,
   demoMail,
@@ -57,7 +62,13 @@ import {
 
 const desktop = isTauri();
 const icons = [Inbox, FilePenLine, Send, Archive, ShieldAlert, Trash2];
-const blankDraft: Draft = { to: "", subject: "", body: "" };
+const blankDraft = (): Draft => ({
+  id: crypto.randomUUID(),
+  revision: 0,
+  to: "",
+  subject: "",
+  body: "",
+});
 type Snapshot = {
   messages: Mail[];
   uidValidity: number;
@@ -119,16 +130,25 @@ export default function App() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [sendBusy, setSendBusy] = useState(false);
   const [draftSaved, setDraftSaved] = useState(false);
-  const [draftLoading, setDraftLoading] = useState(false);
+  const [workOpen, setWorkOpen] = useState(false);
+  const [sentFolder, setSentFolder] = useState("");
+  const [moveTarget, setMoveTarget] = useState("");
+  const saveQueue = useRef(
+    createDraftWriter((accountId, draft) =>
+      invoke("save_draft", { accountId, draft }),
+    ),
+  );
+  const live = useRef({ draft, account, sendBusy, demo });
+  live.current = { draft, account, sendBusy, demo };
   const requestId = useRef(0);
   const bodyId = useRef(0);
   const active = useRef({ demo, folder, uidValidity });
   active.current = { demo, folder, uidValidity };
 
   const hasOpenWork =
-    setup || draft !== null || draftLoading || sendBusy || busy || bodyBusy;
+    setup || workOpen || draft !== null || sendBusy || busy || bodyBusy;
   const updates = useUpdates(hasOpenWork);
-  const modalOpen = setup || draft !== null || preferencesOpen;
+  const modalOpen = setup || workOpen || draft !== null || preferencesOpen;
   useEffect(() => {
     document.documentElement.lang = language;
   }, [language]);
@@ -144,7 +164,7 @@ export default function App() {
       if (event.key !== "Tab") return;
       const fields = [
         ...document.querySelectorAll<HTMLElement>(
-          ".modal-backdrop button:not(:disabled), .modal-backdrop input:not(:disabled), .modal-backdrop select:not(:disabled), .modal-backdrop textarea:not(:disabled)",
+          ".modal-backdrop button:not(:disabled), .modal-backdrop input:not(:disabled), .modal-backdrop select:not(:disabled), .modal-backdrop textarea:not(:disabled), .modal-backdrop summary",
         ),
       ];
       const first = fields[0];
@@ -168,14 +188,117 @@ export default function App() {
 
   useEffect(() => {
     if (!desktop) return;
-    invoke<Account | null>("load_account")
-      .then((a) => {
-        if (a) {
-          setAccount(a);
-          setSetup(true);
+    let cancelled = false;
+    invoke<{
+      account: Account;
+      folders: Folder[];
+      snapshot: Snapshot | null;
+    } | null>("load_startup")
+      .then(async (saved) => {
+        if (!saved || cancelled) return;
+        setAccount(saved.account);
+        setDemo(false);
+        setFolders(saved.folders);
+        setMessages(saved.snapshot?.messages ?? []);
+        setUidValidity(saved.snapshot?.uidValidity ?? 0);
+        setSelected(null);
+        setMessage(null);
+        setOffline(true);
+        if (saved.account.rememberPassword) {
+          void invoke<Folder[]>("list_folders")
+            .then((fs) => {
+              if (
+                !cancelled &&
+                live.current.account &&
+                accountIdentity(live.current.account) ===
+                  accountIdentity(saved.account)
+              )
+                setFolders(fs);
+            })
+            .catch(() => {
+              /* Cached folder tree remains available. Refresh/reconnect reports errors. */
+            });
+          const id = ++requestId.current;
+          // Cache is visible before network/keyring access. Never replace another selected folder.
+          const result = await invoke<Snapshot>("list_messages", {
+            folder: "INBOX",
+          });
+          if (cancelled || id !== requestId.current) return;
+          setMessages(result.messages);
+          setUidValidity(result.uidValidity);
+          setOffline(result.offline);
+          if (result.warning) setError(result.warning);
         }
       })
+      .catch((e) => {
+        if (!cancelled) setError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!draft || demo || !account || sendBusy) return;
+    const snapshot = draft;
+    const timer = setTimeout(() => {
+      void saveQueue
+        .current(accountIdentity(account), snapshot)
+        .then(() => {
+          if (
+            live.current.draft?.id === snapshot.id &&
+            live.current.draft.revision === snapshot.revision
+          )
+            setDraftSaved(true);
+        })
+        .catch((e) => {
+          if (live.current.draft?.id === snapshot.id) setError(String(e));
+        });
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [draft, demo, account, sendBusy]);
+
+  useEffect(() => {
+    if (!desktop) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void getCurrentWindow()
+      .onCloseRequested(async (event) => {
+        const current = live.current;
+        if (current.sendBusy) {
+          event.preventDefault();
+          return;
+        }
+        if (!current.draft || current.demo || !current.account) return;
+        event.preventDefault();
+        try {
+          let snapshot = current.draft;
+          while (true) {
+            await saveQueue.current(accountIdentity(current.account), snapshot);
+            if (live.current.sendBusy) return;
+            const latest = live.current.draft;
+            if (
+              !latest ||
+              (latest.id === snapshot.id &&
+                latest.revision === snapshot.revision)
+            )
+              break;
+            snapshot = latest;
+          }
+          await getCurrentWindow().destroy();
+        } catch (e) {
+          setError(String(e));
+        }
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
       .catch((e) => setError(String(e)));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -203,6 +326,14 @@ export default function App() {
       const result = await invoke<Snapshot>("list_messages", {
         folder: target,
       });
+      if (!result.offline) {
+        try {
+          const fs = await invoke<Folder[]>("list_folders");
+          if (id === requestId.current) setFolders(fs);
+        } catch {
+          /* Keep the cached tree. */
+        }
+      }
       if (id !== requestId.current) return;
       setMessages(result.messages);
       setUidValidity(result.uidValidity);
@@ -304,52 +435,71 @@ export default function App() {
     }
   }
 
-  function moveDemo(target: string) {
-    if (!demo || selected === null) return;
+  function targetFor(role: string) {
+    if (demo) return role[0].toUpperCase() + role.slice(1);
+    const matching = folders.filter((f) => f.selectable && f.role === role);
+    return matching.length === 1 ? matching[0].name : "";
+  }
+
+  async function moveMail(target: string) {
+    if (selected === null || !target || target === folder || busy) return;
     const mail = messages.find((m) => m.uid === selected);
     if (!mail) return;
-    setDemoArchive((old) => ({
-      ...old,
-      [target]: [...(old[target] ?? []), mail],
-    }));
-    setMessages((old) => old.filter((m) => m.uid !== selected));
-    setSelected(null);
-    setMessage(null);
-    setNotice(
-      t("Beispielnachricht nach „{folder}“ verschoben.", {
-        folder: t(demoFolders.find((f) => f.name === target)?.label ?? target),
-      }),
-    );
+    const source = folder;
+    setBusy(true);
+    setError("");
+    ++bodyId.current;
+    setBodyBusy(false);
+    try {
+      if (demo)
+        setDemoArchive((old) => ({
+          ...old,
+          [target]: [...(old[target] ?? []), mail],
+        }));
+      else
+        await invoke("move_message", {
+          folder: source,
+          target,
+          uid: mail.uid,
+          uidValidity,
+        });
+      if (active.current.folder !== source) return;
+      setMessages((old) => old.filter((m) => m.uid !== mail.uid));
+      setSelected(null);
+      setMessage(null);
+      setNotice(t("Nachricht verschoben."));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function compose(mode: "new" | "reply" | "forward") {
     setDraftSaved(false);
-    if (mode === "new") {
-      if (!demo) {
-        setDraftLoading(true);
-        try {
-          setDraft(
-            (await invoke<Draft | null>("load_draft")) ?? { ...blankDraft },
-          );
-        } catch (e) {
-          setError(String(e));
-        } finally {
-          setDraftLoading(false);
-        }
-      } else setDraft({ ...blankDraft });
-    } else if (message)
-      setDraft({
-        to:
-          mode === "reply" ? emailAddress(message.replyTo || message.from) : "",
-        subject: `${mode === "reply" ? "Re" : "Fwd"}: ${message.subject.replace(/^(Re|Fwd):\s*/i, "")}`,
-        body: `\n\n──────── ${t("Ursprüngliche Nachricht")} ────────\n${t("Von:")} ${message.from}\n${t("Betreff")}: ${message.subject}\n\n${message.body ?? ""}`,
-      });
+    setError("");
+    setSentFolder(targetFor("sent"));
+    const next = blankDraft();
+    if (mode !== "new" && message) {
+      next.to =
+        mode === "reply" ? emailAddress(message.replyTo || message.from) : "";
+      next.subject = `${mode === "reply" ? "Re" : "Fwd"}: ${message.subject.replace(/^(Re|Fwd):\s*/i, "")}`;
+      next.body = `\n\n──────── ${t("Ursprüngliche Nachricht")} ────────\n${t("Von:")} ${message.from}\n${t("Betreff")}: ${message.subject}\n\n${message.body ?? ""}`;
+    }
+    setDraft(next);
   }
 
   async function saveDraft(close = false) {
     if (!draft) return;
+    const snapshot = draft;
     try {
-      if (!demo) await invoke("save_draft", { draft });
+      if (!demo && account)
+        await saveQueue.current(accountIdentity(account), snapshot);
+      if (
+        live.current.draft?.id !== snapshot.id ||
+        live.current.draft.revision !== snapshot.revision
+      )
+        return;
       setDraftSaved(true);
       if (close) setDraft(null);
       setNotice(
@@ -364,21 +514,43 @@ export default function App() {
 
   async function send(event: FormEvent) {
     event.preventDefault();
-    if (!draft) return;
+    if (!draft || live.current.sendBusy) return;
     if (demo) {
       setNotice(t("Demo: Es wurde keine E-Mail versendet."));
       setDraft(null);
       return;
     }
+    if (!account) return;
+    live.current.sendBusy = true;
     setSendBusy(true);
     setError("");
     try {
-      const result = await invoke<string>("send_message", { draft });
+      const accountId = accountIdentity(account);
+      await saveQueue.current(accountId, draft);
+      await invoke<Submission>("send_message", {
+        accountId,
+        draft,
+        sentFolder,
+      });
       setDraft(null);
-      setNotice(result);
+      setWorkOpen(true);
     } catch (e) {
       setError(String(e));
+      // A dropped IPC response can follow successful SMTP. Consult durable history before retrying.
+      try {
+        const [, history] = await invoke<[Draft[], Submission[]]>(
+          "local_work",
+          { accountId: accountIdentity(account) },
+        );
+        if (history.some((item) => item.draft.id === draft.id)) {
+          setDraft(null);
+          setWorkOpen(true);
+        }
+      } catch {
+        /* Keep the saved draft visible and the original error. Backend idempotency still applies. */
+      }
     } finally {
+      live.current.sendBusy = false;
       setSendBusy(false);
     }
   }
@@ -600,35 +772,65 @@ export default function App() {
                 <Tool
                   large
                   icon={<Trash2 size={29} className="red-icon" />}
-                  onClick={() => moveDemo("Trash")}
-                  disabled={!demo || !selectedMail || folder === "Trash"}
-                  title={
-                    !demo
-                      ? t(
-                          "Serverseitiges Verschieben folgt in einer nächsten Version.",
-                        )
-                      : undefined
+                  onClick={() => void moveMail(targetFor("trash"))}
+                  disabled={
+                    busy ||
+                    !selectedMail ||
+                    !targetFor("trash") ||
+                    folder === targetFor("trash")
                   }
+                  title={t("In den Papierkorb verschieben")}
                 >
                   {t("Löschen")}{" "}
                 </Tool>
-                <div className="tool-stack">
+                <div className="tool-stack manage-stack">
                   <Tool
                     icon={<Archive size={18} />}
-                    disabled={!demo || !selectedMail || folder === "Archive"}
-                    onClick={() => moveDemo("Archive")}
+                    disabled={
+                      busy ||
+                      !selectedMail ||
+                      !targetFor("archive") ||
+                      folder === targetFor("archive")
+                    }
+                    onClick={() => void moveMail(targetFor("archive"))}
                   >
                     {t("Archivieren")}{" "}
                   </Tool>
                   <Tool
                     icon={<ShieldAlert size={18} />}
-                    disabled={!demo || !selectedMail || folder === "Junk"}
-                    onClick={() => moveDemo("Junk")}
+                    disabled={
+                      busy ||
+                      !selectedMail ||
+                      !targetFor("junk") ||
+                      folder === targetFor("junk")
+                    }
+                    onClick={() => void moveMail(targetFor("junk"))}
                   >
                     {t("Junk-E-Mail")}{" "}
                   </Tool>
+                  <select
+                    className="move-select"
+                    aria-label={t("Verschieben nach")}
+                    value={moveTarget}
+                    disabled={busy || !selectedMail}
+                    onChange={(e) => {
+                      const target = e.target.value;
+                      setMoveTarget("");
+                      void moveMail(target);
+                    }}
+                  >
+                    <option value="">{t("Verschieben nach")}</option>
+                    {folders
+                      .filter((f) => f.selectable && f.name !== folder)
+                      .map((f) => (
+                        <option key={f.name} value={f.name}>
+                          {folderLabel(f)}
+                        </option>
+                      ))}
+                  </select>
                 </div>
               </div>
+
               <div className="group-label">{t("Verwalten")} </div>
             </div>
             <div className="ribbon-group">
@@ -731,6 +933,18 @@ export default function App() {
       )}
       <main className="workspace">
         <aside className="sidebar">
+          {!demo && (
+            <button
+              className="local-work-button"
+              onClick={() => {
+                setError("");
+                setWorkOpen(true);
+              }}
+            >
+              <FilePenLine size={16} />
+              {t("Lokale Entwürfe & Versand")}
+            </button>
+          )}
           <div className="sidebar-heading">
             {view === "mail" ? t("E-Mail") : t("Kalender")}
             <ChevronDown size={14} />
@@ -1097,6 +1311,20 @@ export default function App() {
         </button>
         <span>100 %</span>
       </footer>
+      {workOpen && account && (
+        <LocalWorkDialog
+          account={account}
+          onClose={() => setWorkOpen(false)}
+          onBusy={setSendBusy}
+          onOpen={(saved) => {
+            setWorkOpen(false);
+            setDraft(saved);
+            setDraftSaved(true);
+            setSentFolder(targetFor("sent"));
+            setError("");
+          }}
+        />
+      )}
       {preferencesOpen && (
         <SettingsDialog
           onClose={() => setPreferencesOpen(false)}
@@ -1165,6 +1393,26 @@ export default function App() {
               <p className="compose-from">
                 {t("Von:")} {identity}
               </p>
+              {!demo && (
+                <label className="compose-field">
+                  <span>{t("Gesendet-Kopie")}</span>
+                  <select
+                    required
+                    value={sentFolder}
+                    disabled={sendBusy}
+                    onChange={(e) => setSentFolder(e.target.value)}
+                  >
+                    <option value="">{t("Ordner auswählen")}</option>
+                    {folders
+                      .filter((f) => f.selectable)
+                      .map((f) => (
+                        <option key={f.name} value={f.name}>
+                          {folderLabel(f)}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              )}
               <label className="compose-field">
                 <span>{t("An")} </span>
                 <input
@@ -1175,7 +1423,11 @@ export default function App() {
                   placeholder={t("empfaenger@beispiel.de")}
                   disabled={sendBusy}
                   onChange={(e) => {
-                    setDraft({ ...draft, to: e.target.value });
+                    setDraft({
+                      ...draft,
+                      revision: draft.revision + 1,
+                      to: e.target.value,
+                    });
                     setDraftSaved(false);
                   }}
                   autoFocus
@@ -1188,7 +1440,11 @@ export default function App() {
                   value={draft.subject}
                   disabled={sendBusy}
                   onChange={(e) => {
-                    setDraft({ ...draft, subject: e.target.value });
+                    setDraft({
+                      ...draft,
+                      revision: draft.revision + 1,
+                      subject: e.target.value,
+                    });
                     setDraftSaved(false);
                   }}
                 />
@@ -1199,7 +1455,11 @@ export default function App() {
                 value={draft.body}
                 disabled={sendBusy}
                 onChange={(e) => {
-                  setDraft({ ...draft, body: e.target.value });
+                  setDraft({
+                    ...draft,
+                    revision: draft.revision + 1,
+                    body: e.target.value,
+                  });
                   setDraftSaved(false);
                 }}
                 placeholder={t("Ihre Nachricht …")}
@@ -1215,7 +1475,7 @@ export default function App() {
                       "In der Demo werden keine E-Mails versendet. Entwürfe bleiben nur in diesem Fenster.",
                     )
                   : t(
-                      "Textnachricht · Lokale Entwürfe · Gesendet-Kopie wird noch nicht per IMAP abgelegt.",
+                      "Entwürfe werden automatisch lokal gespeichert. Gesendete Nachrichten werden im gewählten IMAP-Ordner abgelegt.",
                     )}
               </div>
             </form>

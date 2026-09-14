@@ -23,7 +23,11 @@ describe("German and English", () => {
   });
   it("has English text and matching placeholders for every static translation call", () => {
     const missing: string[] = [];
-    for (const file of ["src/App.tsx", "src/SettingsDialog.tsx"]) {
+    for (const file of [
+      "src/App.tsx",
+      "src/SettingsDialog.tsx",
+      "src/LocalWorkDialog.tsx",
+    ]) {
       const source = ts.createSourceFile(
         file,
         readFileSync(file, "utf8"),

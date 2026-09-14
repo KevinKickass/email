@@ -16,6 +16,7 @@ export interface Folder {
   name: string;
   label: string;
   selectable: boolean;
+  role?: string | null;
 }
 export interface Mail {
   uid: number;
@@ -31,9 +32,20 @@ export interface Mail {
   attachments?: string[];
 }
 export interface Draft {
+  id: string;
+  revision: number;
   to: string;
   subject: string;
   body: string;
+}
+export interface Submission {
+  draft: Draft;
+  status: "sending" | "uncertain" | "rejected" | "copy_pending" | "complete";
+  sentFolder: string;
+  detail?: string | null;
+}
+export function accountIdentity(account: Account) {
+  return JSON.stringify([account.imapHost, account.imapPort, account.username]);
 }
 export const emptyAccount: Account = {
   name: "",
