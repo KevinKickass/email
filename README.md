@@ -4,7 +4,7 @@ A classic desktop email client with a ribbon, folder tree, message list and read
 pane. An original interface inspired by familiar Outlook 2010-era workflows, with
 German and English language support.
 
-**Version 0.2.0 — technical preview.** This is not yet a production-ready replacement
+**Version 0.2.1 — technical preview.** This is not yet a production-ready replacement
 for customer deployments. The browser preview uses clearly labelled sample data;
 real email connections are available in the Tauri desktop app.
 

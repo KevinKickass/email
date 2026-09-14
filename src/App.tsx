@@ -224,6 +224,12 @@ export default function App() {
             folder: "INBOX",
           });
           if (cancelled || id !== requestId.current) return;
+          // The cached selection belongs to the old snapshot. Invalidate in-flight
+          // body reads before accepting a potentially different UIDVALIDITY.
+          ++bodyId.current;
+          setSelected(null);
+          setMessage(null);
+          setBodyBusy(false);
           setMessages(result.messages);
           setUidValidity(result.uidValidity);
           setOffline(result.offline);

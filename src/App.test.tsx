@@ -248,4 +248,58 @@ describe("offline drafts and delivery", () => {
       ),
     );
   });
+  it("clears cached selections and rejects late bodies when startup reconnect replaces UIDs", async () => {
+    const original = mocks.invoke.getMockImplementation()!;
+    let finishSync!: (value: unknown) => void;
+    let finishBody!: (value: unknown) => void;
+    const syncing = new Promise((resolve) => {
+      finishSync = resolve;
+    });
+    const reading = new Promise((resolve) => {
+      finishBody = resolve;
+    });
+    const cached = {
+      uid: 1,
+      subject: "Cached email",
+      from: "a@example.org",
+      to: account.email,
+      date: new Date().toISOString(),
+      unread: true,
+      flagged: false,
+      size: 10,
+    };
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === "load_startup") {
+        const saved = await original(command, args);
+        return { ...saved, account: { ...account, rememberPassword: true } };
+      }
+      if (command === "list_folders")
+        return [{ name: "INBOX", label: "INBOX", selectable: true }];
+      if (command === "list_messages") return syncing;
+      if (command === "read_message") return reading;
+      return original(command, args);
+    });
+    mount();
+    await screen.findByText("Cached email");
+    fireEvent.click(screen.getByRole("button", { name: /Cached email/ }));
+    await act(async () => {
+      finishSync({
+        messages: [{ ...cached, subject: "Replacement message" }],
+        uidValidity: 8,
+        offline: false,
+      });
+    });
+    await screen.findByText("Replacement message");
+    await act(async () => {
+      finishBody({ ...cached, body: "Stale cached body" });
+    });
+    expect(screen.queryByText("Stale cached body")).toBeNull();
+    expect(
+      (
+        screen.getByRole("combobox", {
+          name: "Move to folder",
+        }) as HTMLSelectElement
+      ).disabled,
+    ).toBe(true);
+  });
 });
