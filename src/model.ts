@@ -34,6 +34,7 @@ export interface Mail {
 export interface Draft {
   id: string;
   revision: number;
+  sentFolder?: string | null;
   to: string;
   subject: string;
   body: string;

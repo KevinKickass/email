@@ -1320,7 +1320,7 @@ export default function App() {
             setWorkOpen(false);
             setDraft(saved);
             setDraftSaved(true);
-            setSentFolder(targetFor("sent"));
+            setSentFolder(saved.sentFolder ?? targetFor("sent"));
             setError("");
           }}
         />
@@ -1400,7 +1400,15 @@ export default function App() {
                     required
                     value={sentFolder}
                     disabled={sendBusy}
-                    onChange={(e) => setSentFolder(e.target.value)}
+                    onChange={(e) => {
+                      setSentFolder(e.target.value);
+                      setDraft({
+                        ...draft,
+                        revision: draft.revision + 1,
+                        sentFolder: e.target.value,
+                      });
+                      setDraftSaved(false);
+                    }}
                   >
                     <option value="">{t("Ordner auswählen")}</option>
                     {folders

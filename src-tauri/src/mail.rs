@@ -166,6 +166,8 @@ pub struct Draft {
     pub id: String,
     #[serde(default)]
     pub revision: u64,
+    #[serde(default)]
+    pub sent_folder: Option<String>,
     pub to: String,
     pub subject: String,
     pub body: String,
@@ -632,6 +634,7 @@ pub(crate) mod tests {
         let draft = Draft {
             id: new_id(),
             revision: 0,
+            sent_folder: None,
             to: "one@example.org, two@example.org".into(),
             subject: "Grüße".into(),
             body: "Hallo Welt".into(),

@@ -218,4 +218,34 @@ describe("offline drafts and delivery", () => {
       }),
     );
   });
+  it("restores a manually chosen Sent folder with the draft", async () => {
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command, args) =>
+      command === "local_work"
+        ? Promise.resolve([[{ ...savedDraft, sentFolder: "INBOX" }], []])
+        : original(command, args),
+    );
+    mount();
+    await screen.findByText("Cached email");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Local drafts & delivery" }),
+    );
+    await screen.findByText("Recovered draft");
+    fireEvent.click(screen.getByRole("button", { name: "Continue editing" }));
+    expect(
+      (screen.getByRole("combobox", { name: "Sent copy" }) as HTMLSelectElement)
+        .value,
+    ).toBe("INBOX");
+    fireEvent.change(screen.getByRole("combobox", { name: "Sent copy" }), {
+      target: { value: "Sent" },
+    });
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        "save_draft",
+        expect.objectContaining({
+          draft: { ...savedDraft, revision: 3, sentFolder: "Sent" },
+        }),
+      ),
+    );
+  });
 });

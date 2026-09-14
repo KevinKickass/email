@@ -239,6 +239,7 @@ mod tests {
         Draft {
             id: mail::new_id(),
             revision: 1,
+            sent_folder: Some("Custom Sent".into()),
             to: "a@example.org".into(),
             subject: "Hello".into(),
             body: "Saved text".into(),
@@ -322,6 +323,10 @@ mod tests {
         draft.body = "stale".into();
         save_draft(&store, "account", &draft).unwrap();
         assert_eq!(drafts(&store, "account").unwrap()[0].body, "Saved text");
+        assert_eq!(
+            drafts(&store, "account").unwrap()[0].sent_folder.as_deref(),
+            Some("Custom Sent")
+        );
         assert!(drafts(&store, "another").unwrap().is_empty());
     }
     #[test]
