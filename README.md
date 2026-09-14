@@ -10,6 +10,7 @@ real email connections are available in the Tauri desktop app.
 
 [Download releases](https://github.com/KevinKickass/email/releases) ·
 [Builds](https://github.com/KevinKickass/email/actions) ·
+[Contributing](CONTRIBUTING.md) ·
 [Apache-2.0 license](LICENSE)
 
 ## Stack
@@ -213,6 +214,12 @@ Provider integration and Windows GUI behaviour still need separate testing.
 The current `imap-proto` dependency emits a Rust future-incompatibility warning.
 Update or replace the IMAP library before production release and test protocol
 behaviour against Dovecot and other supported servers.
+
+## Contributing
+
+Everyone is welcome to contribute through pull requests. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for setup, the fork/PR workflow and relevant
+checks. Bug reports, translations, documentation and code contributions are welcome.
 
 ## License
 
