@@ -16,6 +16,10 @@ describe("German and English", () => {
     expect(translate("{count} Elemente", "de", { count: 12 })).toBe(
       "12 Elemente",
     );
+    expect(translate("constructor", "en")).toBe("constructor");
+    expect(
+      translate("Konto konnte nicht gespeichert werden: disk full", "en"),
+    ).toBe("Could not save the account: disk full");
   });
   it("has English text and matching placeholders for every static translation call", () => {
     const missing: string[] = [];

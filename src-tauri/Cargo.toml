@@ -1,6 +1,6 @@
 [package]
 name = "email"
-version = "0.1.1"
+version = "0.1.2"
 description = "Ein klassischer IMAP- und SMTP-Desktopclient"
 authors = ["email contributors"]
 license = "Apache-2.0"

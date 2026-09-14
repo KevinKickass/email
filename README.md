@@ -1,214 +1,220 @@
 # email
 
-Ein klassischer Desktop-Mailclient mit deutscher und englischer Oberfläche: Menüband, Ordnerbaum,
-Nachrichtenliste und Lesebereich. Eigenständiges Design mit vertrauter Bedienung
-aus der Outlook-2010-Zeit.
+A classic desktop email client with a ribbon, folder tree, message list and reading
+pane. An original interface inspired by familiar Outlook 2010-era workflows, with
+German and English language support.
 
-**Stand: 0.1.1, technischer Prototyp.** Noch kein fertiger Ersatz für den produktiven
-Kundeneinsatz. Die Browseransicht enthält ausschließlich gekennzeichnete Beispieldaten;
-echte Serververbindungen gibt es in der Tauri-Desktop-App.
+**Version 0.1.2 — technical preview.** This is not yet a production-ready replacement
+for customer deployments. The browser preview uses clearly labelled sample data;
+real email connections are available in the Tauri desktop app.
+
+[Download releases](https://github.com/KevinKickass/email/releases) ·
+[Builds](https://github.com/KevinKickass/email/actions) ·
+[Apache-2.0 license](LICENSE)
 
 ## Stack
 
-- Tauri 2, Rust, React und TypeScript; alle UI-Dateien werden eingebettet.
-- IMAP mit `imap`, MIME mit `mailparse`, SMTP mit `lettre`.
-- **redb 4.2** für Kontoeinstellungen, lokale Entwürfe und Nachrichtencache.
-- Betriebssystem-Schlüsselspeicher über `keyring`: Windows Credential Manager bzw.
-  Secret Service unter Linux. Kennwörter werden nicht in redb gespeichert.
-- Optionaler CalDAV-Endpunkt über HTTPS. Kein eigener Backendserver erforderlich.
+- Tauri 2, Rust, React and TypeScript. All UI assets are embedded.
+- IMAP with `imap`, MIME with `mailparse`, SMTP with `lettre`.
+- **redb 4.2** for account settings, app preferences, local drafts and message caches.
+- OS credential storage through `keyring`: Windows Credential Manager or Linux
+  Secret Service. Passwords are not stored in redb.
+- Optional CalDAV endpoint probing over HTTPS. No application backend service,
+  ActiveSync or Exchange integration is required.
 
-## Starten
+## Development
 
-Voraussetzungen: Node.js 22, Rust >= 1.90 und die
-[Tauri-Systemabhängigkeiten](https://v2.tauri.app/start/prerequisites/).
-Unter Linux insbesondere WebKitGTK 4.1, GTK 3, OpenSSL und D-Bus-Entwicklungspakete.
+Install Node.js 22, Rust >= 1.90 and the
+[Tauri system dependencies](https://v2.tauri.app/start/prerequisites/).
+Linux requires WebKitGTK 4.1, GTK 3, OpenSSL and D-Bus development packages.
 
 ```sh
 npm ci
 npm run desktop
 ```
 
-Nur die Oberfläche im Browser ausprobieren:
+To preview the interface in a browser:
 
 ```sh
 npm run dev
 ```
 
-Die Vorschau läuft auf `http://127.0.0.1:1420`. Vor `npm run desktop` einen bereits
-laufenden Vite-Server beenden, da Tauri diesen selbst startet.
+The browser preview runs at `http://127.0.0.1:1420`. Stop an existing Vite server
+before running `npm run desktop`; Tauri starts its own development server.
 
-## Bereits umgesetzt
+## Implemented features
 
-- Klassisches Menüband, Ordnernavigation, Lesebereich ein-/ausblenden, kompakte Liste.
-- Suche in den geladenen Absendern, Empfängern und Betreffzeilen; Filter für ungelesene
-  und markierte Nachrichten. `F5` aktualisiert, `Strg+N` öffnet einen Entwurf.
-- Ein Konto manuell einrichten; IMAP und SMTP mit TLS oder obligatorischem STARTTLS.
-  Beide Anmeldungen werden vor dem Speichern geprüft, ohne Testnachricht zu senden.
-- Unterschiedliche SMTP-Zugangsdaten sind möglich.
-- Serverordner abrufen, die letzten 100 Nachrichtenköpfe pro Ordner lesen, einzelne
-  Nachrichten bis 10 MiB öffnen. Der Abruf verwendet `EXAMINE` und `BODY.PEEK`,
-  verändert also beim Lesen keine serverseitigen Gelesen-Markierungen.
-- Gelesen/Ungelesen und Nachverfolgung ausdrücklich auf dem Server setzen.
-- MIME-Zeichensätze und kodierte Betreffzeilen dekodieren; Nur-Text-Darstellung;
-  Anhänge als Dateinamen auflisten. Aktive Inhalte und externe Bilder bleiben gesperrt.
-- Textnachrichten über SMTP schreiben, beantworten und weiterleiten.
-- Ein lokaler Entwurf pro Konto: manuell speichern, beim Schließen des Nachrichtenfensters
-  sichern und vor jedem Versand speichern. Fehlgeschlagener Versand behält den Entwurf.
-- Empfangene Listen und bereits geöffnete Texte lokal speichern. Schlägt eine spätere
-  Aktualisierung innerhalb der Sitzung fehl, erscheint der gespeicherte Stand mit
-  Offline-Kennzeichnung und der tatsächlichen Fehlermeldung.
-- Monatskalender als Layoutvorschau. CalDAV-URL speichern und Endpunkt ohne Zugangsdaten
-  prüfen; HTTPS-Weiterleitungen werden begrenzt und HTTP-Downgrades abgelehnt.
+- Classic ribbon, folder navigation, optional reading pane and compact message list.
+- Search loaded senders, recipients and subjects; filter unread or flagged messages.
+  `F5` refreshes the folder; `Ctrl+N` opens a draft.
+- Manual setup of one account using IMAP and SMTP with TLS or mandatory STARTTLS.
+  Both logins are tested before saving, without sending a test message. Separate
+  SMTP credentials are supported.
+- Fetch server folders and the latest 100 message headers per folder; open messages
+  up to 10 MiB. `EXAMINE` and `BODY.PEEK` avoid changing server-side read flags when
+  displaying a message. Read/unread and follow-up flags can be changed explicitly.
+- Decode MIME character sets and encoded subjects; display plain text and list
+  attachment filenames. External images and active content are not loaded.
+- Compose, reply and forward plain-text email over SMTP.
+- One local draft per account, saved manually, when closing the compose window and
+  before sending. Failed sends retain the draft.
+- Cache received lists and previously opened message bodies. If a later refresh
+  fails during the session, cached messages appear with an offline indicator and
+  the actual error.
+- Month calendar preview. Save a CalDAV URL and probe its endpoint without
+  credentials; limit HTTPS redirects and reject HTTP downgrades. Calendar
+  synchronisation is not implemented yet.
+- German and English UI, saved language selection, and opt-in signed updates.
 
-## Lokale Daten
+## Local data
 
-`email.redb` liegt in Tauri `app_data_dir` für `de.email.desktop`, üblicherweise:
+`email.redb` is stored in Tauri's `app_data_dir` for `de.email.desktop`, usually:
 
 - Windows: `%APPDATA%\de.email.desktop\email.redb`
-- Linux: `$XDG_DATA_HOME/de.email.desktop/email.redb`, sonst
-  `~/.local/share/de.email.desktop/email.redb`
+- Linux: `$XDG_DATA_HOME/de.email.desktop/email.redb`, or
+  `~/.local/share/de.email.desktop/email.redb` when `XDG_DATA_HOME` is unset.
 
-Die Datenbank verwendet eine versionierte Tabelle. Werte werden als JSON-Bytes innerhalb
-von redb gespeichert; es gibt keine losen JSON-Dateien und keine SQLite-Abhängigkeit.
-Nachrichtenschlüssel enthalten Server, Port, Benutzer, Ordner, UIDVALIDITY und UID.
-Der redb-Seitencache ist auf 16 MiB konfiguriert; das ist kein Gesamt-RAM-Limit der App.
-Schreibtransaktionen verwenden die standardmäßige dauerhafte Commit-Semantik.
+The database uses a versioned table with JSON-encoded values inside redb. There are
+no separate JSON data files or SQLite dependencies. Message keys include the
+server, port, username, folder, UIDVALIDITY and UID. The redb page cache is set to
+16 MiB; this is not a limit on the app's total memory use. Writes use redb's default
+durable commit semantics.
 
-Die Datenbank enthält persönliche Maildaten und ist derzeit nicht zusätzlich verschlüsselt.
-Für eine einfache Dateisicherung die Anwendung vorher schließen. Ein Live-Backup-Export
-ist noch nicht eingebaut. Die Datenbank wird einmal pro Prozess geöffnet.
+The database contains personal email data and currently has no additional
+encryption. Close the app before copying the database for backup. Live backup
+export is not implemented. The database is opened once per process.
 
-„Kennwort merken“ speichert neue Kennwörter im Systemschlüsselspeicher. Ohne diese Option
-gelten eingegebene Kennwörter nur für die Sitzung; schon früher gespeicherte Kennwörter
-werden dadurch nicht gelöscht. Linux kann ohne laufenden Secret Service mit eingegebenen
-Sitzungskennwörtern verwendet werden.
+Saving passwords stores new credentials in the OS keyring. When disabled, entered
+passwords apply to the current session only; previously saved passwords remain in
+the keyring. Linux can run without an active Secret Service when passwords are
+entered for the session.
 
-Die redb-Schicht liegt separat in `crates/mail-store` und ist ohne Tauri testbar. redb
-passt zur eingebetteten Rust-Anwendung und bietet Transaktionen und Crash-Recovery.
-Es bringt keine SQL-Abfragen oder Volltextsuche mit; dafür werden später eigene Indizes
-bzw. eine zusätzliche Suchkomponente benötigt. Siehe [redb](https://docs.rs/redb/latest/redb/).
+The storage layer lives in `crates/mail-store` and can be tested without Tauri.
+[redb](https://docs.rs/redb/latest/redb/) provides transactions and crash recovery;
+SQL queries and full-text search will require separate indexing or search logic.
 
-## Plattformen und Pakete
+## Platforms and packages
 
-Ab 0.1.1 aktiviert die Linux-App bei geladenem NVIDIA-Treiber vor dem Start von
-GTK/WebKit automatisch `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Das behebt den hier
-reproduzierten GBM-Absturz bzw. das weiße Fenster unter Fedora/KDE Wayland.
-Eine bereits gesetzte Umgebungsvariable wird respektiert. Andere Grafiktreiber
-und die Windows-Ausgaben behalten ihre bisherigen Einstellungen.
+| Target      | Download       | Requirements                           |
+| ----------- | -------------- | -------------------------------------- |
+| Windows x64 | NSIS setup EXE | WebView2                               |
+| Windows x86 | NSIS setup EXE | 32-bit-compatible Windows and WebView2 |
+| Linux x64   | AppImage       | Compatible Linux desktop environment   |
 
-| Ziel        | Ausgabe        | Voraussetzung                    |
-| ----------- | -------------- | -------------------------------- |
-| Windows x64 | NSIS-Setup-EXE | WebView2                         |
-| Windows x86 | NSIS-Setup-EXE | 32-Bit-Ziel und WebView2         |
-| Linux x64   | AppImage       | kompatibles Linux-Desktop-System |
+The executable is separate from the local profile data. The Windows installer can
+install WebView2 if it is missing. A loose executable does not install it itself.
+See [Windows packaging](https://v2.tauri.app/distribute/windows-installer/).
 
-Die ausführbare Datei ist von der wachsenden lokalen Profildatei getrennt. Windows
-nutzt die installierte WebView2-Laufzeit; der NSIS-Installer kann diese nachinstallieren.
-Eine lose EXE erledigt diese Installation nicht selbst.
-[Windows-Paketierung](https://v2.tauri.app/distribute/windows-installer/)
+Since 0.1.1, Linux automatically sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` before
+starting GTK/WebKit when the NVIDIA kernel module is loaded. This addresses the
+GBM crash and blank window reproduced on Fedora/KDE Wayland. An explicit value
+already set by the user is respected.
 
-Für breite Linux-Kompatibilität auf dem ältesten unterstützten System bauen. Die CI
-verwendet Ubuntu 22.04; ein auf einem neueren lokalen Linux erzeugtes AppImage kann
-neuere Systembibliotheken voraussetzen.
-[AppImage-Hinweise](https://v2.tauri.app/distribute/appimage/)
+CI builds Linux packages on Ubuntu 22.04 for compatibility. AppImages built locally
+on a newer distribution may require newer system libraries. See the
+[AppImage guide](https://v2.tauri.app/distribute/appimage/).
+
+For local **unsigned test builds**:
 
 ```sh
 # Linux
-NO_STRIP=1 npm run tauri -- build --bundles appimage
+NO_STRIP=1 npm run tauri -- build --bundles appimage --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
-# Auf Windows x64
+# Windows (Git Bash)
 rustup target add x86_64-pc-windows-msvc i686-pc-windows-msvc
-npm run tauri -- build --target x86_64-pc-windows-msvc --bundles nsis
-npm run tauri -- build --target i686-pc-windows-msvc --bundles nsis
+npm run tauri -- build --target x86_64-pc-windows-msvc --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
+npm run tauri -- build --target i686-pc-windows-msvc --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
 ```
 
-`NO_STRIP=1` umgeht das ältere Strip-Werkzeug in linuxdeploy, das auf neueren
-Distributionen an `.relr.dyn`-Abschnitten scheitern kann. Rust entfernt die
-Debugsymbole der Anwendung bereits im Release-Profil.
-Die Paketierung einer schon gebauten Anwendung kann mit
-`NO_STRIP=1 npm run tauri -- bundle --bundles appimage` wiederholt werden.
+`NO_STRIP=1` bypasses linuxdeploy's older strip tool, which can reject modern ELF
+`.relr.dyn` sections. The Rust release profile already strips the application.
+To bundle an already built application again, use `tauri bundle` with the same
+bundle and signing configuration.
 
-`.github/workflows/build.yml` baut und testet Windows x64, Windows x86 und Linux x64.
-Pushes auf `main` und Pull Requests erzeugen unsignierte CI-Testpakete. Ein stabiles
-Tag wie `v0.1.1` erzeugt signierte EXE-/AppImage-Pakete und veröffentlicht erst nach
-Erfolg aller drei Builds ein GitHub Release samt `latest.json`, Signaturen und SHA256-Prüfsummen.
+## Language and updates
 
-## Sprache und Updates
+**Settings** offers Deutsch, English and automatic system-language detection.
+Other system languages fall back to English. The selected language and update
+preference are saved in redb independently of email accounts. Email content and
+server-defined folder names remain in their original language.
 
-Unter **Einstellungen** stehen Deutsch, English und automatische Systemerkennung
-zur Auswahl (andere Systemsprachen verwenden Englisch). Die Auswahl und der
-Update-Schalter werden kontounabhängig in redb gespeichert. E-Mail-Inhalte und
-vom Server vergebene Ordnernamen bleiben in ihrer Originalsprache.
+Automatic updates are **off by default**. With the option disabled, the app makes
+no automatic GitHub requests. When enabled, it checks the latest GitHub Release
+15 seconds after startup and every six hours, then downloads an available update.
+Choose **Install and restart** to install it when no message is open and no email
+operation is running. Manual update checks are also available. Tauri verifies the
+update signature before installation.
 
-Automatische Updates sind **standardmäßig ausgeschaltet**: ohne Aktivierung
-keine automatischen GitHub-Anfragen. Aktiviert prüft email 15 Sekunden nach dem
-Start und alle sechs Stunden das neueste Release und lädt ein verfügbares Update.
-Die Installation erfolgt über **Installieren und neu starten**, wenn keine Nachricht
-offen ist und kein Mail-Vorgang läuft. Eine manuelle Prüfung ist jederzeit möglich.
-Das Tauri-Updater-Plugin prüft die Signatur vor der Installation.
+On Windows, install the app using the matching NSIS setup EXE. On Linux, keep the
+AppImage in a writable location; the updater replaces that file. Interrupted
+downloads install nothing. Downloads already in progress may finish after the
+option is disabled, but installation always requires choosing a restart.
 
-Windows-Updates setzen eine Installation über die passende NSIS-Setup-EXE voraus.
-Unter Linux das AppImage an einen beschreibbaren Ort legen; die Datei wird beim
-Update ersetzt. Ein unterbrochener Download installiert nichts. Bereits laufende
-Downloads können nach Ausschalten des Schalters noch abgeschlossen werden;
-eine automatische Installation findet nicht statt.
+## Publishing releases
 
-## Ein Release veröffentlichen
+`.github/workflows/build.yml` builds and tests all three targets. Pushes to `main`
+and pull requests produce unsigned CI test packages. Stable version tags produce
+signed packages. A release is published only after all three builds succeed,
+including `latest.json`, detached signatures and SHA256 checksums.
 
-1. Version in `package.json`/`package-lock.json`, `src-tauri/tauri.conf.json` und
-   `src-tauri/Cargo.toml`/`Cargo.lock` erhöhen.
-2. Versionshinweise unter `releases/vX.Y.Z.md` anlegen, committen und pushen.
-3. `git tag vX.Y.Z` und `git push origin vX.Y.Z` ausführen.
+1. Bump the version in `package.json`/`package-lock.json`,
+   `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`/`Cargo.lock`.
+2. Write English release notes in `releases/vX.Y.Z.md`, commit and push.
+3. Run `git tag vX.Y.Z` and `git push origin vX.Y.Z`.
 
-Das GitHub-Actions-Secret `TAURI_SIGNING_PRIVATE_KEY` enthält den privaten
-Updater-Schlüssel. Der öffentliche Schlüssel steht in `tauri.conf.json`.
-Den privaten Schlüssel sicher außerhalb des Repositories sichern: er wird für
-alle künftigen Updates bestehender Installationen benötigt. Kein GitHub-Token
-wird an Nutzer ausgeliefert; das Update-Manifest liegt im öffentlichen Repository
-[KevinKickass/email](https://github.com/KevinKickass/email/releases).
+The GitHub Actions secret `TAURI_SIGNING_PRIVATE_KEY` holds the private updater
+key. The public key is embedded in `tauri.conf.json`. Back up the private key
+securely outside the repository: future updates for existing installations need
+the same key. No GitHub token is distributed with the app. The public update feed
+is hosted in [GitHub Releases](https://github.com/KevinKickass/email/releases).
 
-Lokale signierte Builds benötigen `TAURI_SIGNING_PRIVATE_KEY` (Dateipfad oder Inhalt)
-und bei Bedarf `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Für einen unsignierten Testbuild
-zusätzlich `--config '{"bundle":{"createUpdaterArtifacts":false}}'` an `tauri build`
-übergeben. Update-Signaturen sind keine Windows-Authenticode-Signatur.
+For a local signed build, set `TAURI_SIGNING_PRIVATE_KEY` to the key file path or
+its contents, optionally set `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, and omit the
+unsigned-build configuration override. Update signatures are separate from
+Windows Authenticode code signing.
 
-## Lizenz
+Keep the README, repository metadata, workflow descriptions and release notes in
+English. The application itself supports both German and English.
 
-Apache License 2.0, siehe [LICENSE](LICENSE). SPDX: `Apache-2.0`.
-Abhängigkeiten behalten ihre jeweiligen Lizenzen.
-
-## Prüfen
+## Tests
 
 ```sh
 npm test
 npm run build
+python3 -m unittest discover -s scripts
 cargo test --locked --manifest-path crates/mail-store/Cargo.toml
 cargo check --locked --manifest-path crates/mail-store/Cargo.toml --target i686-pc-windows-msvc
 cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
 cargo clippy --locked --manifest-path src-tauri/Cargo.toml --lib -- -D warnings
 ```
 
-Der STARTTLS-Test verwendet einen lokalen Testserver. Die übrigen Regressionstests
-prüfen Persistenz, Rollback, UID-Isolation, MIME-Dekodierung, Empfängerprüfung und
-unsichere CalDAV-Adressen. Sie benötigen kein reales E-Mail-Konto. Echte Provider-
-Integration und Laufzeitverhalten auf Windows sind noch separat zu testen.
+Tests cover persistence, rollback, UID isolation, MIME decoding, recipient
+validation, unsafe CalDAV URLs, language selection, update opt-in and release
+manifest assembly. The STARTTLS test uses a local test server and verifies that a
+rejected TLS upgrade never sends credentials. No real email account is required.
+Provider integration and Windows GUI behaviour still need separate testing.
 
-## Nächste Schritte zum Kundenprodukt
+## Roadmap to production use
 
-1. Vollständige, inkrementelle IMAP-Synchronisation, Ordnerabonnements und IDLE;
-   vollständiger Offlinestart, Cachebereinigung und Wiederverbindung.
-2. Mehrere Konten und Entwürfe; Autosave und Wiederherstellung nach App-Abbruch.
-3. SMTP-Versand mit verlässlicher Gesendet-Kopie per IMAP APPEND; Postausgang mit
-   Behandlung unklarer Versandbestätigungen. **Aktuell wird keine Gesendet-Kopie abgelegt.**
-4. Anhänge herunterladen/versenden, sichere HTML-Ansicht und vollständige Adressverarbeitung.
-5. Serverseitiges Verschieben/Löschen, deutsche Ordnernamen inklusive Modified UTF-7,
-   Ordnerrollen anhand SPECIAL-USE. Verschieben/Löschen sind derzeit nur Demoaktionen.
-6. CalDAV-Discovery (SRV/TXT und Well-Known), Anmeldung, Kalenderauflistung, echte
-   Synchronisation, Serien, Zeitzonen und Erinnerungen. Der IMAP-Server stellt nicht
-   automatisch CalDAV bereit. [Discovery-Standard](https://www.rfc-editor.org/rfc/rfc6764)
-7. Suchindizes für große Postfächer, Backup/Restore, Migrationen, Signierung und Tests
-   auf den unterstützten Windows-/Linux-Versionen.
+1. Complete incremental IMAP synchronisation, folder subscriptions, IDLE, offline
+   startup, cache cleanup and reconnection.
+2. Multiple accounts and drafts, autosave and recovery after an app crash.
+3. Reliable IMAP APPEND copies after SMTP delivery and an outbox that handles
+   uncertain delivery confirmations. **Sent copies are not saved yet.**
+4. Attachment downloads and sending, safe HTML rendering and fuller address handling.
+5. Server-side moves/deletes, Modified UTF-7 folder names and SPECIAL-USE folder roles.
+   Moving and deleting messages currently work only in the demo.
+6. CalDAV discovery, authentication, calendar listing, synchronisation, recurrence,
+   time zones and reminders. An IMAP host does not automatically provide CalDAV.
+   See [RFC 6764](https://www.rfc-editor.org/rfc/rfc6764).
+7. Search indexes for large mailboxes, backup/restore, migrations, platform code
+   signing and testing across supported Windows and Linux versions.
 
-Die aktuell verwendete `imap-proto`-Version meldet eine Rust-Future-Incompatibility-Warnung.
-Vor der Produktfreigabe die IMAP-Bibliothek aktualisieren oder austauschen und den
-Protokollumfang mit Dovecot/anderen Zielservern prüfen.
+The current `imap-proto` dependency emits a Rust future-incompatibility warning.
+Update or replace the IMAP library before production release and test protocol
+behaviour against Dovecot and other supported servers.
+
+## License
+
+[Apache License 2.0](LICENSE). SPDX identifier: `Apache-2.0`.
+Dependencies retain their respective licenses.

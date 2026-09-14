@@ -17,7 +17,9 @@ export function translate(
   values: Record<string, string | number> = {},
 ) {
   let text =
-    language === "de" ? key : ((en as Record<string, string>)[key] ?? key);
+    language === "en" && Object.hasOwn(en, key)
+      ? (en as Record<string, string>)[key]
+      : key;
   if (language === "en" && text === key) {
     for (const [source, translated] of Object.entries(en)) {
       if (source.endsWith("{detail}") && key.startsWith(source.slice(0, -8))) {
