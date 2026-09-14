@@ -57,7 +57,10 @@ def assemble(tag, source, destination):
     sums = []
     for file in sorted(destination.iterdir()):
         with file.open("rb") as stream:
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            checksum = hashlib.sha256()
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                checksum.update(chunk)
+            digest = checksum.hexdigest()
         sums.append(f"{digest}  {file.name}")
     (destination / "SHA256SUMS").write_text("\n".join(sums) + "\n")
 
