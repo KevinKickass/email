@@ -1,0 +1,14 @@
+node_modules/
+dist/
+src-tauri/target/
+crates/*/target/
+*.tsbuildinfo
+*.log
+.DS_Store
+test-results/
+src-tauri/gen/
+.env
+.env.*
+*.key
+*.key.pub
+__pycache__/

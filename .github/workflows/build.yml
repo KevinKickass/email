@@ -1,0 +1,97 @@
+name: Desktop builds and releases
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - os: windows-latest
+            target: i686-pc-windows-msvc
+            bundles: nsis
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Linux prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libssl-dev libdbus-1-dev librsvg2-dev patchelf libfuse2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            crates/mail-store
+          key: ${{ matrix.target }}
+      - run: npm ci
+      - run: npm test
+      - run: python -m unittest discover -s scripts
+      - run: npm run build
+      - name: Validate release version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: python scripts/release.py --validate "${GITHUB_REF_NAME}"
+      - name: Storage tests (including Windows x86)
+        run: cargo test --locked --manifest-path crates/mail-store/Cargo.toml --target ${{ matrix.target }}
+      - name: Protocol, MIME and preference tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib
+      - name: Build test packages
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        env:
+          NO_STRIP: "1"
+        run: npm run tauri -- build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - name: Build signed release packages
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          NO_STRIP: "1"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npm run tauri -- build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: email-${{ matrix.target }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe.sig
+            src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
+          if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: email-*
+          path: artifacts
+      - name: Assemble complete updater manifest and checksums
+        run: python scripts/release.py "${GITHUB_REF_NAME}" artifacts release
+      - name: Publish release only after all three platforms succeed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/* --verify-tag --title "email ${GITHUB_REF_NAME#v}" --notes-file "releases/${GITHUB_REF_NAME}.md" --latest
