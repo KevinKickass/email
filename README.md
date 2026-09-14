@@ -4,7 +4,7 @@ A classic desktop email client with a ribbon, folder tree, message list and read
 pane. An original interface inspired by familiar Outlook 2010-era workflows, with
 German and English language support.
 
-**Version 0.3.0 — technical preview.** This is not yet a production-ready replacement
+**Version 0.4.0 — technical preview.** This is not yet a production-ready replacement
 for customer deployments. The browser preview uses clearly labelled sample data;
 real email connections are available in the Tauri desktop app.
 
@@ -58,9 +58,17 @@ before running `npm run desktop`; Tauri starts its own development server.
 - Fetch server folders and the latest 100 message headers per folder; open messages
   up to 25 MiB. `EXAMINE` and `BODY.PEEK` avoid changing server-side read flags when
   displaying a message. Read/unread and follow-up flags can be changed explicitly.
-- Decode MIME character sets and encoded subjects; display plain text and save
-  attachments through native **Save as** dialogs. External images and active content
-  are not loaded. Files are saved to the chosen location and never opened automatically.
+- Decode MIME character sets and encoded subjects; read sanitised HTML with a
+  **Plain text** switch. Tables, lists, headings, emphasis, quotations and basic inline
+  colours/alignment are supported. HTML is sanitised in Rust and displayed in an
+  isolated, scriptless frame. Images, forms and other active content stay blocked,
+  including inline/CID images. See [HTML reading and privacy](docs/html-security.md).
+- Actual web-link destinations appear below the message and open in the default
+  browser only when clicked. HTML-only mail gets a text conversion for replies and
+  forwards. Existing text alternatives remain available. HTML over 2 MiB or excessive
+  complexity falls back to text when available, with an explanation.
+- Save attachments through native **Save as** dialogs. Files are saved to the chosen
+  location and never opened automatically.
 - Compose, reply and forward plain-text email over SMTP with file attachments.
   **Attach files** copies selected files into redb, so drafts survive original files
   being moved or deleted. Remove files individually; forwarding includes attachments.
@@ -87,6 +95,8 @@ before running `npm run desktop`; Tauri starts its own development server.
   retain cached messages with an offline indicator and the actual error. Newly opened
   messages cache their full MIME data, including attachments. Messages cached by older
   versions need one online fetch before their attachments can be saved or forwarded.
+  MIME caches from 0.3.0 gain HTML reading offline; older text caches remain readable
+  while HTML requires an online fetch.
 - Month calendar preview. Save a CalDAV URL and probe its endpoint without
   credentials; limit HTTPS redirects and reject HTTP downgrades. Calendar
   synchronisation is not implemented yet.
@@ -223,8 +233,8 @@ validation, draft revision ordering, crash recovery, copy-only delivery retries,
 UIDPLUS moves, quoted mailbox names, APPEND literals, offline startup, window-close
 persistence, binary attachment round trips, import rollback, attachment cleanup,
 file replacement, forwarding, size limits, unsafe CalDAV URLs, language selection,
-update opt-in and release
-manifest assembly. The STARTTLS test uses a local test server and verifies that a
+update opt-in, HTML sanitisation and isolation, MIME alternatives, HTML-only quoting,
+offline body upgrades and release manifest assembly. The STARTTLS test uses a local test server and verifies that a
 rejected TLS upgrade never sends credentials. No real email account is required.
 Provider integration and Windows GUI behaviour still need separate testing.
 
@@ -233,7 +243,8 @@ Provider integration and Windows GUI behaviour still need separate testing.
 1. Incremental IMAP synchronisation, folder subscriptions, IDLE, automatic retry
    backoff and cache cleanup. The current view fetches the latest 100 headers.
 2. Multiple active accounts, server-synchronised drafts and delivery-history retention.
-3. Safe HTML rendering, fuller address handling and streaming larger attachments.
+3. Inline/CID image display, richer HTML/CSS support and composition, fuller address
+   handling and streaming larger attachments.
 4. Folder creation, renaming and subscription management; persistent role overrides.
 5. CalDAV discovery, authentication, calendar listing, synchronisation, recurrence,
    time zones and reminders. An IMAP host does not automatically provide CalDAV.

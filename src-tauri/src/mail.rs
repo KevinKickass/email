@@ -147,6 +147,14 @@ pub struct Mail {
     pub flagged: bool,
     pub size: u32,
     pub body: Option<String>,
+    #[serde(default)]
+    pub html: Option<String>,
+    #[serde(default)]
+    pub html_warning: Option<String>,
+    #[serde(default)]
+    pub links: Vec<String>,
+    #[serde(default)]
+    pub body_version: u8,
     pub attachments: Vec<String>,
     #[serde(default)]
     pub attachment_sizes: Vec<u64>,
@@ -281,6 +289,10 @@ fn parse_header(raw: &[u8], uid: u32, unread: bool, flagged: bool, size: u32) ->
         flagged,
         size,
         body: None,
+        html: None,
+        html_warning: None,
+        links: vec![],
+        body_version: 0,
         attachments: vec![],
         attachment_sizes: vec![],
     })
@@ -391,19 +403,50 @@ pub fn read(c: &Credentials, folder: &str, uid: u32, validity: u32) -> Result<(M
             .any(|f| matches!(f, imap::types::Flag::Flagged)),
         size,
     )?;
-    let (text, files) = decode_parts(raw)?;
-    mail.attachments = files.iter().map(|f| f.name.clone()).collect();
-    mail.attachment_sizes = files.iter().map(|f| f.data.len() as u64).collect();
-    mail.body = Some(if text.is_empty() {
-        "Diese Nachricht enthält keinen Nur-Text-Inhalt. Sichere HTML-Darstellung folgt in einer nächsten Version.".into()
-    } else {
-        text.join("\n\n")
-    });
+    populate_body(&mut mail, raw)?;
     let _ = session.logout();
     Ok((mail, raw.to_vec()))
 }
 
+pub const BODY_VERSION: u8 = 1;
+
+pub fn populate_body(mail: &mut Mail, raw: &[u8]) -> Result<()> {
+    let (body, files) = decode_content(raw)?;
+    mail.attachments = files.iter().map(|f| f.name.clone()).collect();
+    mail.attachment_sizes = files.iter().map(|f| f.data.len() as u64).collect();
+    mail.body = body.plain.filter(|text| !text.trim().is_empty());
+    mail.html = None;
+    mail.html_warning = body.warning;
+    mail.links.clear();
+    if let Some(source) = body.html {
+        match crate::html::render(&source) {
+            Ok(rendered) => {
+                if mail.body.is_none() {
+                    mail.body = Some(rendered.text);
+                }
+                mail.html = Some(rendered.html);
+                mail.links = rendered.links;
+            }
+            Err(error) => mail.html_warning = Some(error),
+        }
+    }
+    mail.body_version = BODY_VERSION;
+    Ok(())
+}
+
+#[derive(Default)]
+struct Body {
+    plain: Option<String>,
+    html: Option<String>,
+    warning: Option<String>,
+}
+
 pub(crate) fn decode_parts(raw: &[u8]) -> Result<(Vec<String>, Vec<crate::attachments::Content>)> {
+    let (body, files) = decode_content(raw)?;
+    Ok((body.plain.into_iter().collect(), files))
+}
+
+fn decode_content(raw: &[u8]) -> Result<(Body, Vec<crate::attachments::Content>)> {
     if raw.len() > MAX_MESSAGE as usize {
         return Err(
             "Diese Nachricht ist größer als 25 MiB und kann nicht vollständig geladen werden."
@@ -427,17 +470,16 @@ pub(crate) fn decode_parts(raw: &[u8]) -> Result<(Vec<String>, Vec<crate::attach
     }
     let parsed =
         mailparse::parse_mail(raw).map_err(|_| "MIME-Nachricht konnte nicht gelesen werden.")?;
-    let (mut text, mut files) = (Vec::new(), Vec::new());
-    collect_parts(&parsed, &mut text, &mut files, 0)?;
-    Ok((text, files))
+    let mut files = Vec::new();
+    let body = collect_parts(&parsed, &mut files, 0)?;
+    Ok((body, files))
 }
 
 fn collect_parts(
     part: &mailparse::ParsedMail<'_>,
-    text: &mut Vec<String>,
     attachments: &mut Vec<crate::attachments::Content>,
     depth: usize,
-) -> Result<()> {
+) -> Result<Body> {
     if depth > 30 {
         return Err("Die MIME-Struktur der Nachricht ist zu tief verschachtelt.".into());
     }
@@ -462,18 +504,103 @@ fn collect_parts(
             ),
             data,
         });
-        return Ok(());
+        return Ok(Body::default());
     }
-    if part.ctype.mimetype.eq_ignore_ascii_case("text/plain") {
-        text.push(
-            part.get_body()
-                .map_err(|_| "Zeichensatz der Nachricht konnte nicht gelesen werden.")?,
-        );
+    if matches!(part.ctype.mimetype.as_str(), "text/plain" | "text/html") {
+        let text = match part.get_body() {
+            Ok(text) => text,
+            Err(_) if part.ctype.mimetype == "text/html" => return Ok(Body { warning: Some("HTML-Inhalt konnte nicht dekodiert werden. Nur-Text wird angezeigt, sofern vorhanden.".into()), ..Body::default() }),
+            Err(_) => return Err("Zeichensatz der Nachricht konnte nicht gelesen werden.".into()),
+        };
+        return Ok(if part.ctype.mimetype == "text/html" {
+            Body {
+                plain: None,
+                html: Some(text),
+                warning: None,
+            }
+        } else {
+            Body {
+                plain: Some(text),
+                html: None,
+                warning: None,
+            }
+        });
     }
-    for child in &part.subparts {
-        collect_parts(child, text, attachments, depth + 1)?;
+    let bodies = part
+        .subparts
+        .iter()
+        .map(|child| collect_parts(child, attachments, depth + 1))
+        .collect::<Result<Vec<_>>>()?;
+    if part.ctype.mimetype == "multipart/alternative" {
+        let mut selected = Body::default();
+        for child in bodies {
+            if child.warning.is_some() {
+                selected.warning = child.warning;
+            }
+            if child.plain.is_some() {
+                selected.plain = child.plain;
+            }
+            if child.html.is_some() {
+                selected.html = child.html;
+            }
+        }
+        if selected.html.is_some() {
+            selected.warning = None;
+        }
+        return Ok(selected);
     }
-    Ok(())
+    if part.ctype.mimetype == "multipart/related" {
+        let root = part
+            .ctype
+            .params
+            .get("start")
+            .and_then(|id| {
+                part.subparts.iter().position(|child| {
+                    child.headers.get_first_value("Content-ID").as_deref() == Some(id.as_str())
+                })
+            })
+            .unwrap_or(0);
+        return Ok(bodies.into_iter().nth(root).unwrap_or_default());
+    }
+    let warning = bodies.iter().find_map(|body| body.warning.clone());
+    let bodies: Vec<_> = bodies
+        .into_iter()
+        .filter(|body| body.plain.is_some() || body.html.is_some())
+        .collect();
+    let plain = if !bodies.is_empty() && bodies.iter().all(|body| body.plain.is_some()) {
+        Some(
+            bodies
+                .iter()
+                .filter_map(|body| body.plain.as_deref())
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        )
+    } else {
+        None
+    };
+    let html = if bodies.iter().any(|body| body.html.is_some()) {
+        Some(
+            bodies
+                .iter()
+                .map(|body| {
+                    body.html.clone().unwrap_or_else(|| {
+                        format!(
+                            "<pre>{}</pre>",
+                            crate::html::escape(body.plain.as_deref().unwrap_or_default())
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join("<hr>"),
+        )
+    } else {
+        None
+    };
+    Ok(Body {
+        plain,
+        html,
+        warning,
+    })
 }
 
 pub fn set_flag(
@@ -733,10 +860,11 @@ pub(crate) mod tests {
         let raw = b"From: Anna <anna@example.org>\r\nSubject: =?UTF-8?Q?Gr=C3=BC=C3=9Fe?=\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\nGr=C3=BC=C3=9Fe\r\n--x\r\nContent-Type: text/html\r\n\r\n<script>bad()</script>\r\n--x\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=secret.txt\r\n\r\nnot body\r\n--x--\r\n";
         let mail = parse_header(raw, 1, true, false, raw.len() as u32).unwrap();
         assert_eq!(mail.subject, "Grüße");
-        let parsed = mailparse::parse_mail(raw).unwrap();
-        let (mut text, mut attachments) = (vec![], vec![]);
-        collect_parts(&parsed, &mut text, &mut attachments, 0).unwrap();
-        assert_eq!(text, vec!["Grüße"]);
+        let mut displayed = mail.clone();
+        populate_body(&mut displayed, raw).unwrap();
+        assert_eq!(displayed.body.as_deref().unwrap().trim(), "Grüße");
+        assert!(!displayed.html.unwrap().contains("script"));
+        let (_, attachments) = decode_content(raw).unwrap();
         assert_eq!(attachments[0].name, "secret.txt");
         assert_eq!(attachments[0].data, b"not body");
     }
@@ -793,5 +921,58 @@ pub(crate) mod tests {
         }
         raw.push_str("--x--\r\n");
         assert!(decode_parts(raw.as_bytes()).unwrap_err().contains("50"));
+    }
+    fn displayed(raw: &[u8]) -> Mail {
+        let mut mail = parse_header(raw, 5, true, false, raw.len() as u32).unwrap();
+        populate_body(&mut mail, raw).unwrap();
+        mail
+    }
+    #[test]
+    fn html_only_decodes_charset_and_builds_quoteable_plain_text() {
+        let mail = displayed(b"Content-Type: text/html; charset=iso-8859-1\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n<h2>Gr=FC=DFe</h2><p>Hello &amp; welcome</p><a href='https://example.org/quote'>Quote</a><script>secret()</script>");
+        assert!(mail.html.unwrap().contains("Grüße"));
+        let text = mail.body.unwrap();
+        assert!(text.contains("Grüße"));
+        assert!(text.contains("Hello & welcome"));
+        assert!(text.contains("https://example.org/quote"));
+        assert!(!text.contains("<p>"));
+        assert!(!text.contains("secret()"));
+    }
+    #[test]
+    fn alternatives_keep_plain_text_and_choose_last_supported_html_without_duplication() {
+        let mail = displayed(b"Content-Type: multipart/alternative; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nOriginal plain\r\n--x\r\nContent-Type: text/html\r\n\r\n<p>Old HTML</p>\r\n--x\r\nContent-Type: text/html\r\n\r\n<p>Preferred HTML</p>\r\n--x--\r\n");
+        assert_eq!(mail.body.unwrap(), "Original plain");
+        assert_eq!(mail.html.unwrap(), "<p>Preferred HTML</p>");
+    }
+    #[test]
+    fn related_root_and_mixed_disclaimer_preserve_body_and_attachment_order() {
+        let raw = b"Content-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\nContent-Type: multipart/related; boundary=r; start=\"<body>\"\r\n\r\n--r\r\nContent-Type: image/png\r\nContent-ID: <logo>\r\nContent-Transfer-Encoding: base64\r\n\r\nAP8=\r\n--r\r\nContent-Type: text/html\r\nContent-ID: <body>\r\n\r\n<h2>Real body</h2><img src='cid:logo'>\r\n--r--\r\n--m\r\nContent-Type: text/plain\r\n\r\nFooter <legal> & terms\r\n--m\r\nContent-Type: text/html\r\nContent-Disposition: attachment; filename=attached.html\r\n\r\n<script>Attached only</script>\r\n--m--\r\n";
+        let mail = displayed(raw);
+        let html = mail.html.unwrap();
+        assert!(html.contains("Real body"));
+        assert!(html.contains("Footer &lt;legal&gt; &amp; terms"));
+        assert!(!html.contains("Attached only"));
+        let text = mail.body.unwrap();
+        assert!(text.contains("Real body"));
+        assert!(text.contains("Footer <legal> & terms"));
+        assert_eq!(mail.attachments, ["attachment.bin", "attached.html"]);
+        let (_, files) = decode_parts(raw).unwrap();
+        assert_eq!(files[0].data, [0, 255]);
+        assert_eq!(files[1].data, b"<script>Attached only</script>");
+    }
+    #[test]
+    fn oversized_html_keeps_original_plain_alternative_and_explains_fallback() {
+        let raw = format!("Content-Type: multipart/alternative; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nStill readable\r\n--x\r\nContent-Type: text/html\r\n\r\n{}\r\n--x--\r\n", "x".repeat(crate::html::MAX_HTML + 1));
+        let mail = displayed(raw.as_bytes());
+        assert!(mail.html.is_none());
+        assert_eq!(mail.body.as_deref(), Some("Still readable"));
+        assert!(mail.html_warning.unwrap().contains("2 MiB"));
+    }
+    #[test]
+    fn broken_html_transfer_encoding_does_not_hide_plain_alternative() {
+        let mail = displayed(b"Content-Type: multipart/alternative; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nReadable fallback\r\n--x\r\nContent-Type: text/html\r\nContent-Transfer-Encoding: base64\r\n\r\na\r\n--x--\r\n");
+        assert_eq!(mail.body.as_deref(), Some("Readable fallback"));
+        assert!(mail.html.is_none());
+        assert!(mail.html_warning.unwrap().contains("dekodiert"));
     }
 }

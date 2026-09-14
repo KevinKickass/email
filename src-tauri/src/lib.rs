@@ -1,5 +1,6 @@
 mod attachments;
 mod folders;
+mod html;
 mod mail;
 mod outbox;
 mod settings;
@@ -8,6 +9,7 @@ use mail_store::Store;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
 
 pub(crate) type Result<T> = std::result::Result<T, String>;
 pub(crate) struct Backend {
@@ -141,7 +143,17 @@ async fn read_message(
             .map_err(|_| "Kontozustand nicht verfügbar.")?;
         let account = state.account()?;
         let key = mail_store::message_key(&account.identity(), &folder, uid_validity, uid);
-        if let Some(cached) = state.store.get::<Mail>(&key).map_err(|e| e.to_string())? {
+        if let Some(mut cached) = state.store.get::<Mail>(&key).map_err(|e| e.to_string())? {
+            if let Some(updated) = attachments::upgrade_cached(&state.store, &account.identity(), &folder, uid_validity, cached.clone())? { return Ok(updated); }
+            // Pre-0.3 caches have no MIME. Attempt one fetch, but preserve offline reading.
+            if let Ok((updated, raw)) = state.credentials().and_then(|c| mail::read(&c, &folder, uid, uid_validity)) {
+                attachments::cache_message(&state.store, &account.identity(), &folder, uid_validity, &updated, &raw)?;
+                return Ok(updated);
+            }
+            cached.html = None;
+            cached.links.clear();
+            cached.html_warning = Some("Für HTML aus älteren gespeicherten Nachrichten ist ein erneuter Online-Abruf nötig.".into());
+            if cached.body.as_deref() == Some("Diese Nachricht enthält keinen Nur-Text-Inhalt. Sichere HTML-Darstellung folgt in einer nächsten Version.") { cached.body = None; }
             return Ok(cached);
         }
         let credentials = state.credentials()?;
@@ -549,6 +561,17 @@ async fn send_message(
 }
 
 #[tauri::command]
+async fn open_web_link(app: tauri::AppHandle, url: String) -> Result<()> {
+    let url = html::web_url(&url)?;
+    blocking(move || {
+        app.opener()
+            .open_url(url, None::<&str>)
+            .map_err(|_| "Der Link konnte nicht im Browser geöffnet werden.".into())
+    })
+    .await
+}
+
+#[tauri::command]
 async fn probe_caldav(url: String) -> Result<String> {
     blocking(move || mail::probe_caldav(&url)).await
 }
@@ -558,6 +581,11 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .setup(|app| {
             let data = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data)?;
@@ -587,6 +615,7 @@ pub fn run() {
             save_draft,
             send_message,
             probe_caldav,
+            open_web_link,
             settings::load_settings,
             settings::save_settings
         ])

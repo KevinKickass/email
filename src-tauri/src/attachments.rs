@@ -282,6 +282,36 @@ pub fn cached_raw(
         })
         .transpose()
 }
+// Upgrade cached MIME without credentials or any network access. Keep headers and
+// explicit local read/flag changes; only rebuild the body and attachment metadata.
+pub fn upgrade_cached(
+    store: &Store,
+    account: &str,
+    folder: &str,
+    validity: u32,
+    mut message: mail::Mail,
+) -> Result<Option<mail::Mail>> {
+    if message.body_version == mail::BODY_VERSION {
+        return Ok(Some(message));
+    }
+    let Some(raw) = cached_raw(store, account, folder, validity, message.uid)? else {
+        return Ok(None);
+    };
+    if let Err(error) = mail::populate_body(&mut message, &raw) {
+        message.html = None;
+        message.links.clear();
+        message.html_warning = Some(error);
+        return Ok(Some(message)); // retain the older cached plain text; do not bless this version
+    }
+    store
+        .put(
+            &mail_store::message_key(account, folder, validity, message.uid),
+            &message,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(Some(message))
+}
+
 pub fn cache_message(
     store: &Store,
     account: &str,
@@ -489,5 +519,56 @@ mod tests {
             .scan::<serde_json::Value>(&prefix("a"))
             .unwrap()
             .is_empty());
+    }
+    #[test]
+    fn upgrades_old_html_cache_offline_and_preserves_flags_and_uid_isolation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.redb");
+        let raw = b"Content-Type: text/html; charset=utf-8\r\n\r\n<h2>Cached HTML</h2><img src='https://tracker.invalid/x'><p>Readable offline</p>";
+        let old: mail::Mail = serde_json::from_value(serde_json::json!({"uid":42,"from":"a@example.org","replyTo":"","to":"b@example.org","subject":"Cached","date":"","unread":false,"flagged":true,"size":raw.len(),"body":"old placeholder","attachments":[]})).unwrap();
+        {
+            let store = Store::open(&path).unwrap();
+            cache_message(&store, "a", "INBOX", 7, &old, raw).unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert!(upgrade_cached(&store, "a", "INBOX", 8, old.clone())
+            .unwrap()
+            .is_none());
+        let new = upgrade_cached(&store, "a", "INBOX", 7, old)
+            .unwrap()
+            .unwrap();
+        assert!(!new.unread);
+        assert!(new.flagged);
+        assert_eq!(new.body_version, mail::BODY_VERSION);
+        assert!(new.html.as_ref().unwrap().contains("<h2>Cached HTML</h2>"));
+        assert!(!new.html.unwrap().contains("tracker.invalid"));
+        assert!(new.body.unwrap().contains("Readable offline"));
+        let saved: mail::Mail = store
+            .get(&mail_store::message_key("a", "INBOX", 7, 42))
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.body_version, mail::BODY_VERSION);
+        assert_eq!(
+            cached_raw(&store, "a", "INBOX", 7, 42).unwrap().unwrap(),
+            raw
+        );
+        let mut legacy = saved;
+        legacy.body_version = 0;
+        legacy.body = Some("Old cached text".into());
+        cache_message(
+            &store,
+            "a",
+            "INBOX",
+            7,
+            &legacy,
+            b"Content-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\na",
+        )
+        .unwrap();
+        let recovered = upgrade_cached(&store, "a", "INBOX", 7, legacy)
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.body.as_deref(), Some("Old cached text"));
+        assert_eq!(recovered.body_version, 0);
+        assert!(recovered.html_warning.is_some());
     }
 }

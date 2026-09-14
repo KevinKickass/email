@@ -529,3 +529,43 @@ describe("attachments", () => {
     );
   });
 });
+
+describe("HTML mail replies", () => {
+  it.each(["Reply", "Forward"])(
+    "uses the converted text for %s without copying markup or sending automatically",
+    async (action) => {
+      const original = mocks.invoke.getMockImplementation()!;
+      mocks.invoke.mockImplementation(async (command, args) => {
+        if (command === "read_message")
+          return {
+            uid: 1,
+            from: "a@example.org",
+            replyTo: "a@example.org",
+            to: account.email,
+            subject: "Cached email",
+            date: new Date().toISOString(),
+            bodyVersion: 1,
+            html: "<h2>HTML-only message</h2><p>Original content</p>",
+            body: "HTML-only message\nOriginal content\nhttps://example.org/",
+            attachments: [],
+            links: ["https://example.org/"],
+          };
+        if (command === "forward_attachments")
+          return { ...args.draft, revision: 1, attachments: [] };
+        return original(command, args);
+      });
+      mount();
+      fireEvent.click(await screen.findByText("Cached email"));
+      await screen.findByTitle("Formatted message content");
+      fireEvent.click(screen.getAllByRole("button", { name: action })[0]);
+      const body = (await screen.findByRole("textbox", {
+        name: "Message body",
+      })) as HTMLTextAreaElement;
+      expect(body.value).toContain("Original content\nhttps://example.org/");
+      expect(body.value).not.toContain("<h2>");
+      expect(mocks.invoke.mock.calls.map(([cmd]) => cmd)).not.toContain(
+        "send_message",
+      );
+    },
+  );
+});

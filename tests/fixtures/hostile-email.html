@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head>
+<meta http-equiv="refresh" content="0;url=http://127.0.0.1:4174/probe/refresh">
+<link rel="stylesheet" href="http://127.0.0.1:4174/probe/stylesheet">
+<style>@import url(http://127.0.0.1:4174/probe/import);</style>
+</head><body>
+<h2>HTML privacy check</h2>
+<p>A readable <strong>formatted message</strong> must remain.</p>
+<table><tr><th>Item</th><th>Count</th></tr><tr><td>Paper</td><td>2</td></tr></table>
+<script>parent.document.getElementById('sentinel').textContent='SCRIPT EXECUTED';fetch('http://127.0.0.1:4174/probe/script')</script>
+<img src="http://127.0.0.1:4174/probe/pixel" srcset="http://127.0.0.1:4174/probe/srcset 2x" alt="Blocked image" onerror="fetch('http://127.0.0.1:4174/probe/event')">
+<iframe src="http://127.0.0.1:4174/probe/frame"></iframe>
+<object data="http://127.0.0.1:4174/probe/object"></object>
+<form action="http://127.0.0.1:4174/probe/form"><input name="secret" value="fixture"><button>Submit test form</button></form>
+<svg><script>fetch('http://127.0.0.1:4174/probe/svg')</script></svg>
+<p style="color:blue;background-image:url(http://127.0.0.1:4174/probe/background);position:fixed">Unsafe CSS must not escape the frame.</p>
+<a href="https://example.org/actual-destination" target="_top" ping="http://127.0.0.1:4174/probe/ping">Misleading sender label</a>
+</body></html>

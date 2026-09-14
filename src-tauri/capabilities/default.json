@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Lokales Hauptfenster; keine Shell-, Dateisystem- oder HTTP-Plugins.",
+  "description": "Local main window: updates and window lifecycle. File and web-link actions use validated Rust commands.",
   "windows": [
     "main"
   ],

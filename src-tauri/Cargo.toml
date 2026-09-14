@@ -1,6 +1,6 @@
 [package]
 name = "email"
-version = "0.3.0"
+version = "0.4.0"
 description = "Ein klassischer IMAP- und SMTP-Desktopclient"
 authors = ["email contributors"]
 license = "Apache-2.0"
@@ -31,6 +31,9 @@ base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-dialog = "2"
 tempfile = "3"
+ammonia = "4"
+html2text = { version = "0.17", default-features = false }
+tauri-plugin-opener = "2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }

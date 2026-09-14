@@ -9,6 +9,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { createDraftWriter } from "./draftWriter";
 import LocalWorkDialog from "./LocalWorkDialog";
+import MessageBody from "./MessageBody";
 import SettingsDialog from "./SettingsDialog";
 import { useUpdates } from "./updates";
 import { useI18n } from "./i18n";
@@ -1370,13 +1371,16 @@ export default function App() {
                           </div>
                         )}
                       </div>
-                      <div className="message-body">{message.body}</div>
-                      <div className="reading-footer">
-                        <ShieldAlert size={13} />
-                        {t(
-                          "Externe Bilder und aktive Inhalte werden nicht geladen.",
-                        )}{" "}
-                      </div>
+                      <MessageBody
+                        key={JSON.stringify([
+                          demo ? "demo" : account && accountIdentity(account),
+                          folder,
+                          uidValidity,
+                          message.uid,
+                        ])}
+                        message={message}
+                        demo={demo}
+                      />
                     </>
                   ) : (
                     <div className="empty reader-empty">

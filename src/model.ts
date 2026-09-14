@@ -28,7 +28,11 @@ export interface Mail {
   unread: boolean;
   flagged: boolean;
   size: number;
-  body?: string;
+  body?: string | null;
+  html?: string | null;
+  htmlWarning?: string | null;
+  bodyVersion?: number;
+  links?: string[];
   attachments?: string[];
   attachmentSizes?: number[];
 }
@@ -96,6 +100,9 @@ export const demoMail: Mail[] = [
     flagged: true,
     size: 4200,
     body: "Guten Morgen Herr Berger,\n\nanbei erhalten Sie den aktualisierten Entwurf für unseren Empfangsbereich. Die besprochenen Änderungen haben wir bereits berücksichtigt.\n\nBesonders bei der Materialauswahl würden wir uns über Ihre Einschätzung freuen. Passt Ihnen ein kurzer Termin am Donnerstag um 10:00 Uhr?\n\nVielen Dank und herzliche Grüße\n\nAnna Weber\nProjektkoordination\n\nWE BER · Architektur & Räume\nMusterstraße 12 · 10115 Berlin\n\nDies ist eine Beispielnachricht in der Demo. Es werden keine Nachrichten empfangen oder versendet.",
+    bodyVersion: 1,
+    html: "<p>Guten Morgen Herr Berger,</p><p>anbei erhalten Sie den <strong>aktualisierten Entwurf</strong> für unseren Empfangsbereich. Die besprochenen Änderungen haben wir bereits berücksichtigt.</p><h3>Abstimmung zum Empfangsbereich</h3><table><tbody><tr><th>Thema</th><th>Nächster Schritt</th></tr><tr><td>Materialauswahl</td><td>Ihre Einschätzung</td></tr><tr><td>Kurzer Termin</td><td>Donnerstag, 10:00 Uhr</td></tr></tbody></table><p>Passt Ihnen der vorgeschlagene Termin?</p><p>Vielen Dank und herzliche Grüße<br><strong>Anna Weber</strong><br>Projektkoordination</p><blockquote>WE BER · Architektur &amp; Räume<br>Musterstraße 12 · 10115 Berlin</blockquote><p><small>Dies ist eine Beispielnachricht in der Demo. Es werden keine Nachrichten empfangen oder versendet.</small></p>",
+    links: ["https://example.org/"],
     attachments: ["Entwurf_Empfang.pdf"],
   },
   {

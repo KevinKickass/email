@@ -1535,3 +1535,84 @@ p {
   border: 1px solid #9bb2cc;
   border-radius: 5px;
 }
+
+.body-toolbar {
+  display: flex;
+  gap: 4px;
+  padding: 8px 30px;
+  border-block: 1px solid #e4eaf2;
+  background: #f8fafc;
+}
+.body-toolbar button {
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 5px 12px;
+  font-size: 11px;
+  color: #46617b;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.body-toolbar button[aria-pressed="true"] {
+  background: #e7eef7;
+  border-color: #b7c9df;
+}
+.html-reader {
+  height: 520px;
+  min-height: 280px;
+  max-height: 80vh;
+  resize: vertical;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.html-reader iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background: white;
+}
+.html-notice {
+  margin: 12px 30px;
+  color: #715a22;
+  font-size: 12px;
+}
+.message-links {
+  margin: 12px 30px;
+  font-size: 12px;
+}
+.message-links summary {
+  cursor: pointer;
+  color: #46617b;
+}
+.message-links p {
+  margin: 8px 0;
+}
+.message-links ul {
+  padding: 0;
+  list-style: none;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.message-links button {
+  border: 0;
+  background: transparent;
+  display: flex;
+  gap: 7px;
+  text-align: left;
+  padding: 6px 0;
+  color: #255e96;
+  cursor: pointer;
+  max-width: 100%;
+}
+.message-links button:disabled {
+  cursor: default;
+  color: #758496;
+}
+.message-links bdi {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.message-links svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}

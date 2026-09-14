@@ -27,6 +27,7 @@ describe("German and English", () => {
       "src/App.tsx",
       "src/SettingsDialog.tsx",
       "src/LocalWorkDialog.tsx",
+      "src/MessageBody.tsx",
     ]) {
       const source = ts.createSourceFile(
         file,
