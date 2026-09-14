@@ -129,6 +129,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [sendBusy, setSendBusy] = useState(false);
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [draftSaved, setDraftSaved] = useState(false);
   const [workOpen, setWorkOpen] = useState(false);
   const [sentFolder, setSentFolder] = useState("");
@@ -138,17 +139,24 @@ export default function App() {
       invoke("save_draft", { accountId, draft }),
     ),
   );
-  const live = useRef({ draft, account, sendBusy, demo });
-  live.current = { draft, account, sendBusy, demo };
+  const live = useRef({ draft, account, sendBusy, attachmentBusy, demo });
+  live.current = { draft, account, sendBusy, attachmentBusy, demo };
   const requestId = useRef(0);
   const bodyId = useRef(0);
   const active = useRef({ demo, folder, uidValidity });
   active.current = { demo, folder, uidValidity };
 
   const hasOpenWork =
-    setup || workOpen || draft !== null || sendBusy || busy || bodyBusy;
+    setup ||
+    workOpen ||
+    draft !== null ||
+    sendBusy ||
+    attachmentBusy ||
+    busy ||
+    bodyBusy;
   const updates = useUpdates(hasOpenWork);
-  const modalOpen = setup || workOpen || draft !== null || preferencesOpen;
+  const modalOpen =
+    setup || workOpen || draft !== null || preferencesOpen || attachmentBusy;
   useEffect(() => {
     document.documentElement.lang = language;
   }, [language]);
@@ -245,7 +253,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!draft || demo || !account || sendBusy) return;
+    if (!draft || demo || !account || sendBusy || attachmentBusy) return;
     const snapshot = draft;
     const timer = setTimeout(() => {
       void saveQueue
@@ -262,7 +270,7 @@ export default function App() {
         });
     }, 500);
     return () => clearTimeout(timer);
-  }, [draft, demo, account, sendBusy]);
+  }, [draft, demo, account, sendBusy, attachmentBusy]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -271,7 +279,7 @@ export default function App() {
     void getCurrentWindow()
       .onCloseRequested(async (event) => {
         const current = live.current;
-        if (current.sendBusy) {
+        if (current.sendBusy || current.attachmentBusy) {
           event.preventDefault();
           return;
         }
@@ -281,7 +289,7 @@ export default function App() {
           let snapshot = current.draft;
           while (true) {
             await saveQueue.current(accountIdentity(current.account), snapshot);
-            if (live.current.sendBusy) return;
+            if (live.current.sendBusy || live.current.attachmentBusy) return;
             const latest = live.current.draft;
             if (
               !latest ||
@@ -482,6 +490,7 @@ export default function App() {
   }
 
   async function compose(mode: "new" | "reply" | "forward") {
+    if (live.current.attachmentBusy) return;
     setDraftSaved(false);
     setError("");
     setSentFolder(targetFor("sent"));
@@ -492,11 +501,30 @@ export default function App() {
       next.subject = `${mode === "reply" ? "Re" : "Fwd"}: ${message.subject.replace(/^(Re|Fwd):\s*/i, "")}`;
       next.body = `\n\n──────── ${t("Ursprüngliche Nachricht")} ────────\n${t("Von:")} ${message.from}\n${t("Betreff")}: ${message.subject}\n\n${message.body ?? ""}`;
     }
-    setDraft(next);
+    if (mode === "forward" && !demo && account && message) {
+      live.current.attachmentBusy = true;
+      setAttachmentBusy(true);
+      try {
+        const updated = await invoke<Draft>("forward_attachments", {
+          accountId: accountIdentity(account),
+          folder,
+          uid: message.uid,
+          uidValidity,
+          draft: next,
+        });
+        setDraft(updated);
+        setDraftSaved(true);
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        live.current.attachmentBusy = false;
+        setAttachmentBusy(false);
+      }
+    } else setDraft(next);
   }
 
   async function saveDraft(close = false) {
-    if (!draft) return;
+    if (!draft || live.current.attachmentBusy) return;
     const snapshot = draft;
     try {
       if (!demo && account)
@@ -518,9 +546,83 @@ export default function App() {
     }
   }
 
+  async function attachFiles() {
+    if (
+      !draft ||
+      !account ||
+      demo ||
+      live.current.attachmentBusy ||
+      live.current.sendBusy
+    )
+      return;
+    live.current.attachmentBusy = true;
+    setAttachmentBusy(true);
+    setError("");
+    try {
+      const accountId = accountIdentity(account);
+      await saveQueue.current(accountId, draft);
+      const updated = await invoke<Draft | null>("pick_attachments", {
+        accountId,
+        draft,
+        title: t("Dateien anhängen"),
+      });
+      if (updated && live.current.draft?.id === draft.id) {
+        setDraft(updated);
+        setDraftSaved(true);
+      }
+    } catch (e) {
+      setError(String(e));
+      // A lost IPC reply can follow a committed import. Recover its newer revision
+      // before letting the user type over a draft whose attachments are unseen.
+      try {
+        const [drafts] = await invoke<[Draft[], Submission[]]>("local_work", {
+          accountId: accountIdentity(account),
+        });
+        const saved = drafts.find(
+          (item) => item.id === draft.id && item.revision > draft.revision,
+        );
+        if (saved) {
+          setDraft(saved);
+          setDraftSaved(true);
+        }
+      } catch {
+        /* Preserve the original error; revision checks prevent overwrite. */
+      }
+    } finally {
+      live.current.attachmentBusy = false;
+      setAttachmentBusy(false);
+    }
+  }
+
+  async function saveAttachment(index: number) {
+    if (!message || !account || demo || live.current.attachmentBusy) return;
+    live.current.attachmentBusy = true;
+    setAttachmentBusy(true);
+    setError("");
+    try {
+      const saved = await invoke<boolean>("save_attachment", {
+        location: {
+          accountId: accountIdentity(account),
+          folder,
+          uid: message.uid,
+          uidValidity,
+          index,
+          name: message.attachments?.[index],
+        },
+        title: t("Anhang speichern unter"),
+      });
+      if (saved) setNotice(t("Anhang gespeichert."));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      live.current.attachmentBusy = false;
+      setAttachmentBusy(false);
+    }
+  }
+
   async function send(event: FormEvent) {
     event.preventDefault();
-    if (!draft || live.current.sendBusy) return;
+    if (!draft || live.current.sendBusy || live.current.attachmentBusy) return;
     if (demo) {
       setNotice(t("Demo: Es wurde keine E-Mail versendet."));
       setDraft(null);
@@ -1244,18 +1346,26 @@ export default function App() {
                         {!!message.attachments?.length && (
                           <div className="attachments">
                             {message.attachments.map((a, i) => (
-                              <span
+                              <button
                                 key={`${a}-${i}`}
-                                title={t(
-                                  "Anhänge werden in dieser Vorschau nur aufgelistet.",
-                                )}
+                                disabled={demo || attachmentBusy}
+                                title={
+                                  demo
+                                    ? t("Beispiel")
+                                    : t("Anhang speichern unter")
+                                }
+                                onClick={() => void saveAttachment(i)}
                               >
                                 <Paperclip size={15} />
                                 {a}
                                 <small>
-                                  {demo ? t("Beispiel") : t("Anhang")}
+                                  {demo
+                                    ? t("Beispiel")
+                                    : message.attachmentSizes?.[i] !== undefined
+                                      ? fileSize(message.attachmentSizes[i])
+                                      : t("Speichern unter …")}
                                 </small>
-                              </span>
+                              </button>
                             ))}
                           </div>
                         )}
@@ -1348,6 +1458,13 @@ export default function App() {
           onConnected={connected}
         />
       )}
+      {attachmentBusy && !draft && (
+        <div className="modal-backdrop">
+          <div className="attachment-progress" role="status">
+            {t("Anhänge werden verarbeitet …")}
+          </div>
+        </div>
+      )}
       {draft && (
         <div className="modal-backdrop">
           <div
@@ -1363,7 +1480,7 @@ export default function App() {
               </span>
               <button
                 aria-label={t("Nachricht schließen")}
-                disabled={sendBusy}
+                disabled={sendBusy || attachmentBusy}
                 onClick={() => {
                   if (demo) setDraft(null);
                   else void saveDraft(true);
@@ -1377,7 +1494,7 @@ export default function App() {
                 <button
                   className="primary-button"
                   type="submit"
-                  disabled={sendBusy}
+                  disabled={sendBusy || attachmentBusy}
                 >
                   <Send size={16} />
                   {sendBusy
@@ -1389,11 +1506,22 @@ export default function App() {
                 <button
                   className="standard-button"
                   type="button"
-                  disabled={sendBusy}
+                  disabled={sendBusy || attachmentBusy}
                   onClick={() => void saveDraft()}
                 >
                   <Save size={15} />
                   {draftSaved ? t("Gespeichert") : t("Entwurf speichern")}
+                </button>
+                <button
+                  className="standard-button"
+                  type="button"
+                  disabled={demo || sendBusy || attachmentBusy}
+                  onClick={() => void attachFiles()}
+                >
+                  <Paperclip size={15} />
+                  {attachmentBusy
+                    ? t("Anhänge werden verarbeitet …")
+                    : t("Dateien anhängen")}
                 </button>
               </div>
               <p className="compose-from">
@@ -1405,7 +1533,7 @@ export default function App() {
                   <select
                     required
                     value={sentFolder}
-                    disabled={sendBusy}
+                    disabled={sendBusy || attachmentBusy}
                     onChange={(e) => {
                       setSentFolder(e.target.value);
                       setDraft({
@@ -1435,7 +1563,7 @@ export default function App() {
                   multiple
                   value={draft.to}
                   placeholder={t("empfaenger@beispiel.de")}
-                  disabled={sendBusy}
+                  disabled={sendBusy || attachmentBusy}
                   onChange={(e) => {
                     setDraft({
                       ...draft,
@@ -1452,7 +1580,7 @@ export default function App() {
                 <input
                   required
                   value={draft.subject}
-                  disabled={sendBusy}
+                  disabled={sendBusy || attachmentBusy}
                   onChange={(e) => {
                     setDraft({
                       ...draft,
@@ -1463,11 +1591,47 @@ export default function App() {
                   }}
                 />
               </label>
+              {!demo && (
+                <p className="attachment-limit">
+                  {t("Bis zu 50 Anhänge, zusammen höchstens 16 MiB.")}
+                </p>
+              )}
+              {!!draft.attachments?.length && (
+                <div
+                  className="attachments draft-attachments"
+                  aria-label={t("Anhänge")}
+                >
+                  {draft.attachments.map((file) => (
+                    <span key={file.id}>
+                      <Paperclip size={15} />
+                      <span>{file.name}</span>
+                      <small>{fileSize(file.size)}</small>
+                      <button
+                        type="button"
+                        disabled={sendBusy || attachmentBusy}
+                        aria-label={t("{name} entfernen", { name: file.name })}
+                        onClick={() => {
+                          setDraft({
+                            ...draft,
+                            revision: draft.revision + 1,
+                            attachments: draft.attachments?.filter(
+                              (item) => item.id !== file.id,
+                            ),
+                          });
+                          setDraftSaved(false);
+                        }}
+                      >
+                        <X size={14} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
               <textarea
                 aria-label={t("Nachrichtentext")}
                 required
                 value={draft.body}
-                disabled={sendBusy}
+                disabled={sendBusy || attachmentBusy}
                 onChange={(e) => {
                   setDraft({
                     ...draft,
@@ -1974,4 +2138,12 @@ function CalendarView() {
       </div>
     </section>
   );
+}
+
+function fileSize(bytes: number) {
+  return bytes < 1024
+    ? `${bytes} B`
+    : bytes < 1024 * 1024
+      ? `${(bytes / 1024).toFixed(1)} KiB`
+      : `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }

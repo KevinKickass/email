@@ -1,5 +1,5 @@
 use crate::{
-    folders,
+    attachments, folders,
     mail::{self, Account, Credentials, Draft},
     Result,
 };
@@ -46,7 +46,7 @@ fn valid(draft: &Draft) -> Result<()> {
     }
     Ok(())
 }
-pub fn save_draft(store: &Store, account: &str, draft: &Draft) -> Result<()> {
+pub fn check_editable(store: &Store, account: &str, draft: &Draft) -> Result<()> {
     valid(draft)?;
     if store
         .get::<Submission>(&key(account, &draft.id))
@@ -58,16 +58,50 @@ pub fn save_draft(store: &Store, account: &str, draft: &Draft) -> Result<()> {
                 .into(),
         );
     }
+    Ok(())
+}
+pub fn save_draft(store: &Store, account: &str, draft: &Draft) -> Result<()> {
+    check_editable(store, account, draft)?;
+    attachments::validate_refs(store, account, &draft.attachments)?;
     let key = draft_key(account, &draft.id);
-    if store
-        .get::<Draft>(&key)
-        .map_err(|e| e.to_string())?
+    let old = store.get::<Draft>(&key).map_err(|e| e.to_string())?;
+    if old
+        .as_ref()
         .is_some_and(|old| old.revision > draft.revision)
     {
         return Ok(());
     }
-    store.put(&key, draft).map_err(|e| e.to_string())
+    if old
+        .as_ref()
+        .is_some_and(|old| old.revision == draft.revision && old != draft)
+    {
+        return Err("Der Entwurf wurde inzwischen geändert. Bitte erneut öffnen.".into());
+    }
+    let mut changes = if let Some(old) = old {
+        attachments::removals(
+            store,
+            account,
+            &draft.id,
+            &old.attachments,
+            &draft.attachments,
+        )?
+    } else {
+        vec![]
+    };
+    changes.push((key, Some(serde_json::to_vec(draft).unwrap())));
+    store.batch(&changes).map_err(|e| e.to_string())
 }
+pub fn delete_draft(store: &Store, account: &str, id: &str) -> Result<()> {
+    let key = draft_key(account, id);
+    let mut changes = if let Some(old) = store.get::<Draft>(&key).map_err(|e| e.to_string())? {
+        attachments::removals(store, account, id, &old.attachments, &[])?
+    } else {
+        vec![]
+    };
+    changes.push((key, None));
+    store.batch(&changes).map_err(|e| e.to_string())
+}
+
 pub fn drafts(store: &Store, account: &str) -> Result<Vec<Draft>> {
     // One-time migration from the original single-draft slot, atomically with its removal.
     let legacy_key = format!("draft-v1:{account}");
@@ -109,10 +143,16 @@ pub trait Delivery {
     fn submit(&mut self, draft: &Draft, raw: &[u8]) -> std::result::Result<(), (Status, String)>;
     fn copy(&mut self, draft: &Draft, raw: &[u8], target: &str) -> Result<()>;
 }
-pub struct Network<'a>(pub &'a Credentials);
+pub struct Network<'a>(pub &'a Credentials, pub &'a Store);
 impl Delivery for Network<'_> {
     fn prepare(&mut self, draft: &Draft, target: &str) -> Result<Vec<u8>> {
-        let raw = mail::build_message(&self.0.account, draft)?.formatted();
+        let files = attachments::load(self.1, &self.0.account.identity(), &draft.attachments)?;
+        let raw = mail::build_message(&self.0.account, draft, &files)?.formatted();
+        if raw.len() > mail::MAX_MESSAGE as usize {
+            return Err(
+                "Die vollständige Nachricht einschließlich Anhängen ist größer als 25 MiB.".into(),
+            );
+        }
         let mut session = mail::connect(self.0)?;
         mail::validate_folder(target)?;
         session
@@ -122,10 +162,9 @@ impl Delivery for Network<'_> {
         Ok(raw)
     }
     fn submit(&mut self, draft: &Draft, raw: &[u8]) -> std::result::Result<(), (Status, String)> {
-        let message =
-            mail::build_message(&self.0.account, draft).map_err(|e| (Status::Rejected, e))?;
+        let envelope = mail::envelope(&self.0.account, draft).map_err(|e| (Status::Rejected, e))?;
         let smtp = mail::smtp(self.0).map_err(|e| (Status::Rejected, e))?;
-        smtp.send_raw(message.envelope(), raw).map(|_| ()).map_err(|e| {
+        smtp.send_raw(&envelope, raw).map(|_| ()).map_err(|e| {
             if e.status().is_some() { (Status::Rejected, "SMTP hat die Nachricht abgelehnt. Es wurde keine Annahme bestätigt.".into()) }
             else { (Status::Uncertain, "Versandstatus unklar. Vor einem erneuten Versand beim Empfänger oder Server prüfen.".into()) }
         })
@@ -159,6 +198,13 @@ pub fn send(
         }
         old
     } else {
+        if store
+            .get::<Draft>(&draft_key(&identity, &draft.id))
+            .map_err(|e| e.to_string())?
+            .is_some_and(|old| old.revision > draft.revision)
+        {
+            return Err("Der Entwurf wurde inzwischen geändert. Bitte erneut öffnen.".into());
+        }
         save_draft(store, &identity, &draft)?;
         let raw = delivery.prepare(&draft, &target)?;
         let mut entry = Submission {
@@ -204,7 +250,7 @@ pub fn send(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     struct Fake {
         smtp: usize,
@@ -235,10 +281,11 @@ mod tests {
             }
         }
     }
-    fn draft() -> Draft {
+    pub(crate) fn draft() -> Draft {
         Draft {
             id: mail::new_id(),
             revision: 1,
+            attachments: vec![],
             sent_folder: Some("Custom Sent".into()),
             to: "a@example.org".into(),
             subject: "Hello".into(),
@@ -349,5 +396,100 @@ mod tests {
             .get::<serde_json::Value>("draft-v1:account")
             .unwrap()
             .is_none());
+    }
+    #[test]
+    fn attachment_copy_retry_uses_persisted_mime_after_restart() {
+        struct AttachmentDelivery {
+            raw: Vec<u8>,
+            fail_copy: bool,
+            smtp: usize,
+        }
+        impl Delivery for AttachmentDelivery {
+            fn prepare(&mut self, _: &Draft, _: &str) -> Result<Vec<u8>> {
+                Ok(self.raw.clone())
+            }
+            fn submit(
+                &mut self,
+                _: &Draft,
+                raw: &[u8],
+            ) -> std::result::Result<(), (Status, String)> {
+                assert_eq!(raw, self.raw);
+                self.smtp += 1;
+                Ok(())
+            }
+            fn copy(&mut self, _: &Draft, raw: &[u8], _: &str) -> Result<()> {
+                assert_eq!(mail::decode_parts(raw).unwrap().1[0].data, [0, 255, 42]);
+                if self.fail_copy {
+                    Err("lost append response".into())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mail.redb");
+        let account = mail::tests::account();
+        let id = account.identity();
+        let saved;
+        let mut delivery = AttachmentDelivery {
+            raw: vec![],
+            fail_copy: true,
+            smtp: 0,
+        };
+        {
+            let store = Store::open(&path).unwrap();
+            saved = attachments::add_files(
+                &store,
+                &id,
+                draft(),
+                vec![attachments::Content {
+                    name: "data.bin".into(),
+                    data: vec![0, 255, 42],
+                }],
+            )
+            .unwrap();
+            let mut stale = saved.clone();
+            stale.revision -= 1;
+            assert!(send(&store, &account, stale, "Sent".into(), &mut delivery).is_err());
+            assert_eq!(delivery.smtp, 0);
+            delivery.raw = mail::build_message(
+                &account,
+                &saved,
+                &attachments::load(&store, &id, &saved.attachments).unwrap(),
+            )
+            .unwrap()
+            .formatted();
+            assert_eq!(
+                send(
+                    &store,
+                    &account,
+                    saved.clone(),
+                    "Sent".into(),
+                    &mut delivery
+                )
+                .unwrap()
+                .status,
+                Status::CopyPending
+            );
+        }
+        let store = Store::open(&path).unwrap();
+        delivery.raw.clear(); // retry must not call prepare or submit again
+        delivery.fail_copy = false;
+        assert_eq!(
+            send(&store, &account, saved, "Sent".into(), &mut delivery)
+                .unwrap()
+                .status,
+            Status::Complete
+        );
+        let retained = history(&store, &id).unwrap()[0].draft.clone();
+        let mut copy = retained.clone();
+        copy.id = mail::new_id();
+        save_draft(&store, &id, &copy).unwrap();
+        delete_draft(&store, &id, &copy.id).unwrap();
+        assert_eq!(
+            attachments::load(&store, &id, &retained.attachments).unwrap()[0].data,
+            [0, 255, 42]
+        );
+        assert_eq!(delivery.smtp, 1);
     }
 }

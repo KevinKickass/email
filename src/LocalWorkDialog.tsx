@@ -151,6 +151,13 @@ export default function LocalWorkDialog({
               <details>
                 <summary>{t("Nachricht anzeigen")}</summary>
                 <pre>{entry.draft.body}</pre>
+                {!!entry.draft.attachments?.length && (
+                  <ul aria-label={t("Anhänge")}>
+                    {entry.draft.attachments.map((file) => (
+                      <li key={file.id}>{file.name}</li>
+                    ))}
+                  </ul>
+                )}
               </details>
               {entry.status === "copy_pending" && (
                 <button

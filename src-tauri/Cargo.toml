@@ -1,6 +1,6 @@
 [package]
 name = "email"
-version = "0.2.1"
+version = "0.3.0"
 description = "Ein klassischer IMAP- und SMTP-Desktopclient"
 authors = ["email contributors"]
 license = "Apache-2.0"
@@ -29,8 +29,7 @@ roxmltree = "0.20"
 mail-store = { path = "../crates/mail-store" }
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
-
-[dev-dependencies]
+tauri-plugin-dialog = "2"
 tempfile = "3"
 
 [target.'cfg(target_os = "linux")'.dependencies]

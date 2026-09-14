@@ -303,3 +303,229 @@ describe("offline drafts and delivery", () => {
     ).toBe(true);
   });
 });
+
+describe("attachments", () => {
+  async function openDraft() {
+    mount();
+    await screen.findByText("Cached email");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Local drafts & delivery" }),
+    );
+    await screen.findByText("Recovered draft");
+    fireEvent.click(screen.getByRole("button", { name: "Continue editing" }));
+  }
+  const file = {
+    id: "ea79ae4b-edb9-48ea-a7ee-23a4391d429d",
+    name: "report.pdf",
+    size: 2048,
+  };
+  it("flushes the latest edit before importing, blocks closing, and autosaves removal", async () => {
+    await openDraft();
+    const original = mocks.invoke.getMockImplementation()!;
+    let finish!: (draft: Draft) => void;
+    const pending = new Promise<Draft>((resolve) => {
+      finish = resolve;
+    });
+    mocks.invoke.mockImplementation((command, args) =>
+      command === "pick_attachments" ? pending : original(command, args),
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "Message body" }), {
+      target: { value: "Latest text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Attach files" }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        "pick_attachments",
+        expect.anything(),
+      ),
+    );
+    const calls = mocks.invoke.mock.calls;
+    const pickIndex = calls.findIndex(
+      ([command]) => command === "pick_attachments",
+    );
+    expect(calls[pickIndex - 1][0]).toBe("save_draft");
+    const submitted = calls[pickIndex][1].draft as Draft;
+    expect(submitted.body).toBe("Latest text");
+    expect(
+      (
+        screen.getByRole("textbox", {
+          name: "Message body",
+        }) as HTMLTextAreaElement
+      ).disabled,
+    ).toBe(true);
+    const event = { preventDefault: vi.fn() };
+    await act(async () => {
+      await mocks.close!(event);
+    });
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(mocks.destroy).not.toHaveBeenCalled();
+    await act(async () => {
+      finish({
+        ...submitted,
+        revision: submitted.revision + 1,
+        attachments: [file],
+      });
+    });
+    await screen.findByText("report.pdf");
+    fireEvent.click(screen.getByRole("button", { name: "Remove report.pdf" }));
+    await waitFor(
+      () =>
+        expect(mocks.invoke).toHaveBeenCalledWith(
+          "save_draft",
+          expect.objectContaining({
+            draft: expect.objectContaining({
+              revision: submitted.revision + 2,
+              attachments: [],
+            }),
+          }),
+        ),
+      { timeout: 2000 },
+    );
+    expect(screen.queryByText("report.pdf")).toBeNull();
+  });
+  it("recovers an import committed before its IPC response was lost", async () => {
+    await openDraft();
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command, args) =>
+      command === "pick_attachments"
+        ? Promise.reject("response lost")
+        : command === "local_work"
+          ? Promise.resolve([
+              [
+                {
+                  ...savedDraft,
+                  revision: savedDraft.revision + 1,
+                  attachments: [file],
+                },
+              ],
+              [],
+            ])
+          : original(command, args),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Attach files" }));
+    await screen.findByRole("button", { name: "Remove report.pdf" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Message body" }), {
+      target: { value: "Edit after recovery" },
+    });
+    await waitFor(
+      () =>
+        expect(mocks.invoke).toHaveBeenCalledWith(
+          "save_draft",
+          expect.objectContaining({
+            draft: expect.objectContaining({
+              revision: savedDraft.revision + 2,
+              attachments: [file],
+              body: "Edit after recovery",
+            }),
+          }),
+        ),
+      { timeout: 2000 },
+    );
+  });
+  it("keeps attachments and text when a picker is cancelled or import fails", async () => {
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command, args) =>
+      command === "local_work"
+        ? Promise.resolve([[{ ...savedDraft, attachments: [file] }], []])
+        : command === "pick_attachments"
+          ? Promise.resolve(null)
+          : original(command, args),
+    );
+    await openDraft();
+    fireEvent.click(screen.getByRole("button", { name: "Attach files" }));
+    await waitFor(() =>
+      expect(
+        (
+          screen.getByRole("button", {
+            name: "Attach files",
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(false),
+    );
+    expect(screen.getByText("report.pdf")).toBeTruthy();
+    mocks.invoke.mockImplementation((command, args) =>
+      command === "pick_attachments"
+        ? Promise.reject("disk full")
+        : original(command, args),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Attach files" }));
+    expect((await screen.findAllByText("disk full")).length).toBeGreaterThan(0);
+    expect(screen.getByText("report.pdf")).toBeTruthy();
+    expect(
+      (
+        screen.getByRole("textbox", {
+          name: "Message body",
+        }) as HTMLTextAreaElement
+      ).value,
+    ).toBe("Saved body");
+  });
+  it("binds saving and forwarding to the opened message and keeps attachment references", async () => {
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command, args) => {
+      if (command === "read_message")
+        return Promise.resolve({
+          uid: 1,
+          from: "a@example.org",
+          replyTo: "a@example.org",
+          to: account.email,
+          subject: "Cached email",
+          date: new Date().toISOString(),
+          body: "Mail body",
+          attachments: ["report.pdf"],
+          attachmentSizes: [2048],
+        });
+      if (command === "save_attachment") return Promise.resolve(true);
+      if (command === "forward_attachments")
+        return Promise.resolve({
+          ...args.draft,
+          revision: 1,
+          attachments: [file],
+        });
+      return original(command, args);
+    });
+    mount();
+    fireEvent.click(await screen.findByText("Cached email"));
+    fireEvent.click(await screen.findByRole("button", { name: /report\.pdf/ }));
+    await screen.findByText("Attachment saved.");
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "save_attachment",
+      expect.objectContaining({
+        location: {
+          accountId: JSON.stringify([
+            account.imapHost,
+            account.imapPort,
+            account.username,
+          ]),
+          folder: "INBOX",
+          uid: 1,
+          uidValidity: 7,
+          index: 0,
+          name: "report.pdf",
+        },
+      }),
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "Forward" })[0]);
+    await screen.findByRole("button", { name: "Remove report.pdf" });
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "forward_attachments",
+      expect.objectContaining({
+        folder: "INBOX",
+        uid: 1,
+        uidValidity: 7,
+        draft: expect.objectContaining({ subject: "Fwd: Cached email" }),
+      }),
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "To" }), {
+      target: { value: "recipient@example.org" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        "send_message",
+        expect.objectContaining({
+          draft: expect.objectContaining({ attachments: [file] }),
+        }),
+      ),
+    );
+  });
+});

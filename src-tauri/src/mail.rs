@@ -1,6 +1,6 @@
 use crate::Result;
 use lettre::{
-    message::{header::ContentType, Mailbox},
+    message::{header::ContentType, Attachment, Mailbox, MultiPart, SinglePart},
     transport::smtp::authentication::Credentials as SmtpCredentials,
     Message, SmtpTransport,
 };
@@ -13,7 +13,7 @@ use std::{
 };
 
 const TIMEOUT: Duration = Duration::from_secs(15);
-const MAX_MESSAGE: u32 = 10 * 1024 * 1024;
+pub(crate) const MAX_MESSAGE: u32 = 25 * 1024 * 1024;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -148,6 +148,8 @@ pub struct Mail {
     pub size: u32,
     pub body: Option<String>,
     pub attachments: Vec<String>,
+    #[serde(default)]
+    pub attachment_sizes: Vec<u64>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -159,13 +161,15 @@ pub struct Snapshot {
     pub warning: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Draft {
     #[serde(default = "new_id")]
     pub id: String,
     #[serde(default)]
     pub revision: u64,
+    #[serde(default)]
+    pub attachments: Vec<crate::attachments::AttachmentRef>,
     #[serde(default)]
     pub sent_folder: Option<String>,
     pub to: String,
@@ -278,6 +282,7 @@ fn parse_header(raw: &[u8], uid: u32, unread: bool, flagged: bool, size: u32) ->
         size,
         body: None,
         attachments: vec![],
+        attachment_sizes: vec![],
     })
 }
 
@@ -339,7 +344,7 @@ pub(crate) fn verify_validity(actual: Option<u32>, expected: u32, uid: u32) -> R
     }
 }
 
-pub fn read(c: &Credentials, folder: &str, uid: u32, validity: u32) -> Result<Mail> {
+pub fn read(c: &Credentials, folder: &str, uid: u32, validity: u32) -> Result<(Mail, Vec<u8>)> {
     validate_folder(folder)?;
     let mut session = connect(c)?;
     let mailbox = session
@@ -355,7 +360,10 @@ pub fn read(c: &Credentials, folder: &str, uid: u32, validity: u32) -> Result<Ma
         .and_then(|f| f.size)
         .ok_or("Nachricht wurde verschoben oder gelöscht.")?;
     if size > MAX_MESSAGE {
-        return Err("Diese Nachricht ist größer als 10 MiB. Große Nachrichten und Anhang-Downloads folgen in einer nächsten Version.".into());
+        return Err(
+            "Diese Nachricht ist größer als 25 MiB und kann nicht vollständig geladen werden."
+                .into(),
+        );
     }
     let data = session
         .uid_fetch(
@@ -383,23 +391,51 @@ pub fn read(c: &Credentials, folder: &str, uid: u32, validity: u32) -> Result<Ma
             .any(|f| matches!(f, imap::types::Flag::Flagged)),
         size,
     )?;
-    let parsed =
-        mailparse::parse_mail(raw).map_err(|_| "MIME-Nachricht konnte nicht gelesen werden.")?;
-    let mut text = Vec::new();
-    collect_parts(&parsed, &mut text, &mut mail.attachments, 0)?;
+    let (text, files) = decode_parts(raw)?;
+    mail.attachments = files.iter().map(|f| f.name.clone()).collect();
+    mail.attachment_sizes = files.iter().map(|f| f.data.len() as u64).collect();
     mail.body = Some(if text.is_empty() {
         "Diese Nachricht enthält keinen Nur-Text-Inhalt. Sichere HTML-Darstellung folgt in einer nächsten Version.".into()
     } else {
         text.join("\n\n")
     });
     let _ = session.logout();
-    Ok(mail)
+    Ok((mail, raw.to_vec()))
+}
+
+pub(crate) fn decode_parts(raw: &[u8]) -> Result<(Vec<String>, Vec<crate::attachments::Content>)> {
+    if raw.len() > MAX_MESSAGE as usize {
+        return Err(
+            "Diese Nachricht ist größer als 25 MiB und kann nicht vollständig geladen werden."
+                .into(),
+        );
+    }
+    // Every multipart recursion in mailparse needs a Content-Type field. Bound
+    // those before calling its recursive parser, including folded header values.
+    let types = raw
+        .split(|b| *b == b'\n')
+        .filter(|line| {
+            line.split(|b| *b == b':')
+                .next()
+                .unwrap_or_default()
+                .trim_ascii()
+                .eq_ignore_ascii_case(b"Content-Type")
+        })
+        .count();
+    if types > 128 {
+        return Err("Die MIME-Struktur der Nachricht ist zu komplex.".into());
+    }
+    let parsed =
+        mailparse::parse_mail(raw).map_err(|_| "MIME-Nachricht konnte nicht gelesen werden.")?;
+    let (mut text, mut files) = (Vec::new(), Vec::new());
+    collect_parts(&parsed, &mut text, &mut files, 0)?;
+    Ok((text, files))
 }
 
 fn collect_parts(
     part: &mailparse::ParsedMail<'_>,
     text: &mut Vec<String>,
-    attachments: &mut Vec<String>,
+    attachments: &mut Vec<crate::attachments::Content>,
     depth: usize,
 ) -> Result<()> {
     if depth > 30 {
@@ -410,12 +446,22 @@ fn collect_parts(
         .params
         .get("filename")
         .or_else(|| part.ctype.params.get("name"));
-    if disposition.disposition == mailparse::DispositionType::Attachment || filename.is_some() {
-        attachments.push(
-            filename
-                .cloned()
-                .unwrap_or_else(|| "Anhang ohne Dateinamen".into()),
-        );
+    if disposition.disposition == mailparse::DispositionType::Attachment
+        || filename.is_some()
+        || (part.subparts.is_empty() && !part.ctype.mimetype.starts_with("text/"))
+    {
+        if attachments.len() >= crate::attachments::MAX_FILES {
+            return Err("Maximal 50 Anhänge pro Nachricht.".into());
+        }
+        let data = part
+            .get_body_raw()
+            .map_err(|_| "Anhang konnte nicht dekodiert werden.")?;
+        attachments.push(crate::attachments::Content {
+            name: crate::attachments::safe_name(
+                filename.map(String::as_str).unwrap_or("attachment.bin"),
+            ),
+            data,
+        });
         return Ok(());
     }
     if part.ctype.mimetype.eq_ignore_ascii_case("text/plain") {
@@ -483,8 +529,12 @@ pub fn test_smtp(c: &Credentials) -> Result<()> {
     }
 }
 
-pub(crate) fn build_message(a: &Account, draft: &Draft) -> Result<Message> {
-    if draft.body.len() > MAX_MESSAGE as usize {
+pub(crate) fn build_message(
+    a: &Account,
+    draft: &Draft,
+    attachments: &[crate::attachments::Content],
+) -> Result<Message> {
+    if draft.body.len() > 10 * 1024 * 1024 {
         return Err("Die Nachricht ist zu groß (maximal 10 MiB).".into());
     }
     if draft.subject.trim().is_empty() || draft.to.trim().is_empty() {
@@ -504,10 +554,40 @@ pub(crate) fn build_message(a: &Account, draft: &Draft) -> Result<Message> {
             "Eine Empfängeradresse ist ungültig. Mehrere Adressen mit Komma trennen."
         })?);
     }
-    builder
-        .header(ContentType::TEXT_PLAIN)
-        .body(draft.body.clone())
-        .map_err(|_| "Nachricht konnte nicht erstellt werden.".into())
+    if attachments.is_empty() {
+        builder
+            .header(ContentType::TEXT_PLAIN)
+            .body(draft.body.clone())
+    } else {
+        let mut mixed = MultiPart::mixed().singlepart(SinglePart::plain(draft.body.clone()));
+        for file in attachments {
+            mixed = mixed.singlepart(Attachment::new(file.name.clone()).body(
+                file.data.clone(),
+                ContentType::parse("application/octet-stream").unwrap(),
+            ));
+        }
+        builder.multipart(mixed)
+    }
+    .map_err(|_| "Nachricht konnte nicht erstellt werden.".into())
+}
+
+pub(crate) fn envelope(a: &Account, draft: &Draft) -> Result<lettre::address::Envelope> {
+    let from = a
+        .email
+        .parse()
+        .map_err(|_| "Absenderadresse ist ungültig.")?;
+    let recipients = draft
+        .to
+        .split(',')
+        .map(|s| {
+            s.trim().parse::<Mailbox>().map(|m| m.email).map_err(|_| {
+                "Eine Empfängeradresse ist ungültig. Mehrere Adressen mit Komma trennen."
+                    .to_string()
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    lettre::address::Envelope::new(Some(from), recipients)
+        .map_err(|_| "Empfänger und Betreff sind erforderlich.".into())
 }
 
 pub fn probe_caldav(url: &str) -> Result<String> {
@@ -634,18 +714,19 @@ pub(crate) mod tests {
         let draft = Draft {
             id: new_id(),
             revision: 0,
+            attachments: vec![],
             sent_folder: None,
             to: "one@example.org, two@example.org".into(),
             subject: "Grüße".into(),
             body: "Hallo Welt".into(),
         };
-        let message = build_message(&account(), &draft).unwrap();
+        let message = build_message(&account(), &draft, &[]).unwrap();
         assert_eq!(message.envelope().to().len(), 2);
         let invalid = Draft {
             to: "not an address".into(),
             ..draft
         };
-        assert!(build_message(&account(), &invalid).is_err());
+        assert!(build_message(&account(), &invalid, &[]).is_err());
     }
     #[test]
     fn mime_decodes_subject_and_ignores_html_and_attachments() {
@@ -656,7 +737,8 @@ pub(crate) mod tests {
         let (mut text, mut attachments) = (vec![], vec![]);
         collect_parts(&parsed, &mut text, &mut attachments, 0).unwrap();
         assert_eq!(text, vec!["Grüße"]);
-        assert_eq!(attachments, vec!["secret.txt"]);
+        assert_eq!(attachments[0].name, "secret.txt");
+        assert_eq!(attachments[0].data, b"not body");
     }
     #[test]
     fn stale_uidvalidity_and_control_characters_are_rejected() {
@@ -670,5 +752,46 @@ pub(crate) mod tests {
     fn caldav_rejects_plaintext_and_embedded_passwords_without_network() {
         assert!(probe_caldav("http://localhost/caldav").is_err());
         assert!(probe_caldav("https://user:secret@localhost/caldav").is_err());
+    }
+    #[test]
+    fn multipart_roundtrip_preserves_binary_empty_files_unicode_names_and_envelope() {
+        use crate::attachments::Content;
+        let mut draft = crate::outbox::tests::draft();
+        draft.body = "Grüße from the message body".into();
+        draft.to = "one@example.org, Two <two@example.org>".into();
+        let files = vec![
+            Content {
+                name: "Grüße.bin".into(),
+                data: (0..=255).collect(),
+            },
+            Content {
+                name: "empty.txt".into(),
+                data: vec![],
+            },
+        ];
+        let message = build_message(&account(), &draft, &files).unwrap();
+        assert_eq!(envelope(&account(), &draft).unwrap(), *message.envelope());
+        let raw = message.formatted();
+        let (body, decoded) = decode_parts(&raw).unwrap();
+        assert_eq!(body, [draft.body]);
+        assert_eq!(decoded.len(), files.len());
+        for (actual, expected) in decoded.iter().zip(&files) {
+            assert_eq!(actual.name, expected.name);
+            assert_eq!(actual.data, expected.data);
+        }
+    }
+    #[test]
+    fn excessive_mime_and_attachment_counts_are_rejected() {
+        assert!(decode_parts(&vec![b'x'; MAX_MESSAGE as usize + 1]).is_err());
+        let many_headers = "Content-Type: multipart/mixed; boundary=x\r\n".repeat(129);
+        assert!(decode_parts(many_headers.as_bytes())
+            .unwrap_err()
+            .contains("komplex"));
+        let mut raw = "Content-Type: multipart/mixed; boundary=x\r\n\r\n".to_string();
+        for _ in 0..=crate::attachments::MAX_FILES {
+            raw.push_str("--x\r\nContent-Type: application/octet-stream\r\n\r\nx\r\n");
+        }
+        raw.push_str("--x--\r\n");
+        assert!(decode_parts(raw.as_bytes()).unwrap_err().contains("50"));
     }
 }

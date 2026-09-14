@@ -4,7 +4,7 @@ A classic desktop email client with a ribbon, folder tree, message list and read
 pane. An original interface inspired by familiar Outlook 2010-era workflows, with
 German and English language support.
 
-**Version 0.2.1 — technical preview.** This is not yet a production-ready replacement
+**Version 0.3.0 — technical preview.** This is not yet a production-ready replacement
 for customer deployments. The browser preview uses clearly labelled sample data;
 real email connections are available in the Tauri desktop app.
 
@@ -56,11 +56,17 @@ before running `npm run desktop`; Tauri starts its own development server.
   Both logins are tested before saving, without sending a test message. Separate
   SMTP credentials are supported.
 - Fetch server folders and the latest 100 message headers per folder; open messages
-  up to 10 MiB. `EXAMINE` and `BODY.PEEK` avoid changing server-side read flags when
+  up to 25 MiB. `EXAMINE` and `BODY.PEEK` avoid changing server-side read flags when
   displaying a message. Read/unread and follow-up flags can be changed explicitly.
-- Decode MIME character sets and encoded subjects; display plain text and list
-  attachment filenames. External images and active content are not loaded.
-- Compose, reply and forward plain-text email over SMTP.
+- Decode MIME character sets and encoded subjects; display plain text and save
+  attachments through native **Save as** dialogs. External images and active content
+  are not loaded. Files are saved to the chosen location and never opened automatically.
+- Compose, reply and forward plain-text email over SMTP with file attachments.
+  **Attach files** copies selected files into redb, so drafts survive original files
+  being moved or deleted. Remove files individually; forwarding includes attachments.
+  Up to 50 attachments and 16 MiB of attachment data per outgoing message; the complete
+  encoded message must fit within 25 MiB. The recipient's server may impose lower limits.
+  Incoming MIME parsing is also bounded; unusually complex messages may be refused.
 - Multiple local drafts per account, with debounced autosave, revision checks and
   recovery through **Local drafts & delivery**. Closing the app waits for the latest
   edit to be saved; a failed save keeps the window open. Older single drafts migrate
@@ -78,7 +84,9 @@ before running `npm run desktop`; Tauri starts its own development server.
 - Offline startup from cached folders, message lists and previously opened bodies.
   Saved credentials reconnect automatically. Session-only accounts stay usable
   offline until credentials are entered through account setup. Refresh failures
-  retain cached messages with an offline indicator and the actual error.
+  retain cached messages with an offline indicator and the actual error. Newly opened
+  messages cache their full MIME data, including attachments. Messages cached by older
+  versions need one online fetch before their attachments can be saved or forwarded.
 - Month calendar preview. Save a CalDAV URL and probe its endpoint without
   credentials; limit HTTPS redirects and reject HTTP downgrades. Calendar
   synchronisation is not implemented yet.
@@ -96,7 +104,11 @@ The database uses a versioned table with JSON-encoded values inside redb. There 
 no separate JSON data files or SQLite dependencies. Message keys include the
 server, port, username, folder, UIDVALIDITY and UID. The redb page cache is set to
 16 MiB; this is not a limit on the app's total memory use. Writes use redb's default
-durable commit semantics.
+durable commit semantics. Imported attachment bytes are stored separately from draft
+metadata, so autosaving text does not rewrite the files. Removing attachments or
+deleting local drafts atomically frees files no other draft or delivery entry uses.
+Received MIME caches and delivery history currently have no automatic retention limit;
+completed delivery entries retain their attachment files.
 
 The database contains personal email data and currently has no additional
 encryption. Close the app before copying the database for backup. Live backup
@@ -209,7 +221,9 @@ cargo clippy --locked --manifest-path src-tauri/Cargo.toml --lib -- -D warnings
 Tests cover persistence, rollback, UID isolation, MIME decoding, recipient
 validation, draft revision ordering, crash recovery, copy-only delivery retries,
 UIDPLUS moves, quoted mailbox names, APPEND literals, offline startup, window-close
-persistence, unsafe CalDAV URLs, language selection, update opt-in and release
+persistence, binary attachment round trips, import rollback, attachment cleanup,
+file replacement, forwarding, size limits, unsafe CalDAV URLs, language selection,
+update opt-in and release
 manifest assembly. The STARTTLS test uses a local test server and verifies that a
 rejected TLS upgrade never sends credentials. No real email account is required.
 Provider integration and Windows GUI behaviour still need separate testing.
@@ -219,7 +233,7 @@ Provider integration and Windows GUI behaviour still need separate testing.
 1. Incremental IMAP synchronisation, folder subscriptions, IDLE, automatic retry
    backoff and cache cleanup. The current view fetches the latest 100 headers.
 2. Multiple active accounts, server-synchronised drafts and delivery-history retention.
-3. Attachment downloads and sending, safe HTML rendering and fuller address handling.
+3. Safe HTML rendering, fuller address handling and streaming larger attachments.
 4. Folder creation, renaming and subscription management; persistent role overrides.
 5. CalDAV discovery, authentication, calendar listing, synchronisation, recurrence,
    time zones and reminders. An IMAP host does not automatically provide CalDAV.

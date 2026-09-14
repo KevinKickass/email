@@ -30,8 +30,15 @@ export interface Mail {
   size: number;
   body?: string;
   attachments?: string[];
+  attachmentSizes?: number[];
+}
+export interface AttachmentRef {
+  id: string;
+  name: string;
+  size: number;
 }
 export interface Draft {
+  attachments?: AttachmentRef[];
   id: string;
   revision: number;
   sentFolder?: string | null;

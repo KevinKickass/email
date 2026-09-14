@@ -1,3 +1,4 @@
+mod attachments;
 mod folders;
 mod mail;
 mod outbox;
@@ -6,6 +7,7 @@ use mail::{Account, Credentials, Draft, Folder, Mail, Snapshot};
 use mail_store::Store;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
+use tauri_plugin_dialog::DialogExt;
 
 pub(crate) type Result<T> = std::result::Result<T, String>;
 pub(crate) struct Backend {
@@ -143,12 +145,173 @@ async fn read_message(
             return Ok(cached);
         }
         let credentials = state.credentials()?;
-        let mail = mail::read(&credentials, &folder, uid, uid_validity)?;
-        state
-            .store
-            .put(&key, &mail)
-            .map_err(|e| format!("Nachricht konnte nicht gespeichert werden: {e}"))?;
+        let (mail, raw) = mail::read(&credentials, &folder, uid, uid_validity)?;
+        attachments::cache_message(
+            &state.store,
+            &account.identity(),
+            &folder,
+            uid_validity,
+            &mail,
+            &raw,
+        )?;
         Ok(mail)
+    })
+    .await
+}
+
+// File paths are obtained only through native dialogs, never through IPC arguments.
+#[tauri::command]
+async fn pick_attachments(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Backend>>,
+    account_id: String,
+    draft: Draft,
+    title: String,
+) -> Result<Option<Draft>> {
+    let state = Arc::clone(&state);
+    blocking(move || {
+        state.check_account(&account_id)?;
+        let mut picker = app.dialog().file().set_title(title);
+        if let Some(window) = app.get_webview_window("main") {
+            picker = picker.set_parent(&window);
+        }
+        let Some(files) = picker.blocking_pick_files() else {
+            return Ok(None);
+        };
+        let paths = files
+            .into_iter()
+            .map(|file| {
+                file.into_path()
+                    .map_err(|_| "Ungültiger Dateipfad.".to_string())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let _guard = state
+            .operation
+            .lock()
+            .map_err(|_| "Kontozustand nicht verfügbar.")?;
+        state.check_account(&account_id)?;
+        attachments::import(&state.store, &account_id, draft, &paths).map(Some)
+    })
+    .await
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentLocation {
+    account_id: String,
+    folder: String,
+    uid: u32,
+    uid_validity: u32,
+    index: usize,
+    name: String,
+}
+#[tauri::command]
+async fn save_attachment(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Backend>>,
+    location: AttachmentLocation,
+    title: String,
+) -> Result<bool> {
+    let state = Arc::clone(&state);
+    blocking(move || {
+        let file = {
+            let _guard = state
+                .operation
+                .lock()
+                .map_err(|_| "Kontozustand nicht verfügbar.")?;
+            state.check_account(&location.account_id)?;
+            let raw = match attachments::cached_raw(
+                &state.store,
+                &location.account_id,
+                &location.folder,
+                location.uid_validity,
+                location.uid,
+            )? {
+                Some(raw) => raw,
+                None => {
+                    let (message, raw) = mail::read(
+                        &state.credentials()?,
+                        &location.folder,
+                        location.uid,
+                        location.uid_validity,
+                    )?;
+                    attachments::cache_message(
+                        &state.store,
+                        &location.account_id,
+                        &location.folder,
+                        location.uid_validity,
+                        &message,
+                        &raw,
+                    )?;
+                    raw
+                }
+            };
+            mail::decode_parts(&raw)?
+                .1
+                .into_iter()
+                .nth(location.index)
+                .ok_or("Dieser Anhang ist nicht verfügbar.")?
+        };
+        if file.name != attachments::safe_name(&location.name) {
+            return Err(
+                "Die Anhangliste wurde aktualisiert. Bitte die Nachricht erneut öffnen.".into(),
+            );
+        }
+        let mut picker = app
+            .dialog()
+            .file()
+            .set_title(title)
+            .set_file_name(&file.name);
+        if let Some(window) = app.get_webview_window("main") {
+            picker = picker.set_parent(&window);
+        }
+        let Some(destination) = picker.blocking_save_file() else {
+            return Ok(false);
+        };
+        let path = destination
+            .into_path()
+            .map_err(|_| "Ungültiger Dateipfad.")?;
+        attachments::save_to(&path, &file.data)?;
+        Ok(true)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn forward_attachments(
+    state: tauri::State<'_, Arc<Backend>>,
+    account_id: String,
+    folder: String,
+    uid: u32,
+    uid_validity: u32,
+    draft: Draft,
+) -> Result<Draft> {
+    let state = Arc::clone(&state);
+    blocking(move || {
+        let _guard = state
+            .operation
+            .lock()
+            .map_err(|_| "Kontozustand nicht verfügbar.")?;
+        state.check_account(&account_id)?;
+        let raw =
+            match attachments::cached_raw(&state.store, &account_id, &folder, uid_validity, uid)? {
+                Some(raw) => raw,
+                None => {
+                    let (message, raw) =
+                        mail::read(&state.credentials()?, &folder, uid, uid_validity)?;
+                    attachments::cache_message(
+                        &state.store,
+                        &account_id,
+                        &folder,
+                        uid_validity,
+                        &message,
+                        &raw,
+                    )?;
+                    raw
+                }
+            };
+        let files = mail::decode_parts(&raw)?.1;
+        attachments::add_files(&state.store, &account_id, draft, files)
     })
     .await
 }
@@ -355,10 +518,7 @@ async fn delete_draft(
             .lock()
             .map_err(|_| "Kontozustand nicht verfügbar.")?;
         state.check_account(&account_id)?;
-        state
-            .store
-            .batch(&[(outbox::draft_key(&account_id, &id), None)])
-            .map_err(|e| e.to_string())
+        outbox::delete_draft(&state.store, &account_id, &id)
     })
     .await
 }
@@ -382,7 +542,7 @@ async fn send_message(
             &account,
             draft,
             sent_folder,
-            &mut outbox::Network(&c),
+            &mut outbox::Network(&c, &state.store),
         )
     })
     .await
@@ -397,6 +557,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data)?;
@@ -414,6 +575,9 @@ pub fn run() {
             connect_account,
             list_messages,
             read_message,
+            pick_attachments,
+            save_attachment,
+            forward_attachments,
             set_flag,
             load_startup,
             list_folders,
