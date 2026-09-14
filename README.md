@@ -13,6 +13,10 @@ real email connections are available in the Tauri desktop app.
 [Contributing](CONTRIBUTING.md) ·
 [Apache-2.0 license](LICENSE)
 
+![email inbox with the classic ribbon, folder tree, message list and reading pane](docs/images/email-inbox.jpg)
+
+*English interface with sample messages in the browser preview.*
+
 ## Stack
 
 - Tauri 2, Rust, React and TypeScript. All UI assets are embedded.
