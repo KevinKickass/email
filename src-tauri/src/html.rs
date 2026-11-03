@@ -1,5 +1,5 @@
 //! HTML is parsed and sanitised in Rust, before any bytes enter a WebView.
-//! The frontend adds a separate opaque, scriptless sandbox and a deny-all CSP.
+//! Links and image sources become inert indices; the trusted reader handles them.
 use crate::Result;
 use ammonia::{Builder, Url, UrlRelative};
 use std::{
@@ -12,11 +12,13 @@ const MAX_MARKUP: usize = 10_000;
 const MAX_NODES: usize = 20_000;
 const MAX_DEPTH: usize = 128;
 const MAX_LINKS: usize = 100;
+pub const MAX_IMAGES: usize = 50;
 
 pub struct Rendered {
     pub html: String,
     pub text: String,
     pub links: Vec<String>,
+    pub remote_images: Vec<String>,
 }
 
 // Shared with the native opener: no relative URLs, credentials, local files,
@@ -89,6 +91,8 @@ pub fn render(source: &str) -> Result<Rendered> {
     bounded_html(source)?;
     let links = Arc::new(Mutex::new(Vec::<String>::new()));
     let captured = Arc::clone(&links);
+    let images = Arc::new(Mutex::new(Vec::<String>::new()));
+    let captured_images = Arc::clone(&images);
     let html = Builder::new()
         .tags(
             [
@@ -166,9 +170,10 @@ pub fn render(source: &str) -> Result<Rendered> {
         .generic_attributes(["style", "dir", "lang"].into())
         .tag_attributes(HashMap::from([
             ("a", ["href"].into()),
-            ("img", ["alt"].into()),
-            ("td", ["colspan", "rowspan"].into()),
+            ("img", ["alt", "src", "width", "height"].into()),
+            ("td", ["colspan", "rowspan", "background"].into()),
             ("th", ["colspan", "rowspan"].into()),
+            ("table", ["background"].into()),
             ("ol", ["start"].into()),
         ]))
         // These properties cannot fetch resources or position content over app UI.
@@ -193,12 +198,35 @@ pub fn render(source: &str) -> Result<Rendered> {
                 ("a", "href") => {
                     if let Ok(url) = web_url(value) {
                         let mut links = captured.lock().unwrap();
-                        if links.len() < MAX_LINKS && !links.contains(&url) {
+                        if let Some(index) = links.iter().position(|link| link == &url) {
+                            return Some(format!("https://mail.invalid/{index}").into());
+                        }
+                        if links.len() < MAX_LINKS {
                             links.push(url);
+                            return Some(
+                                format!("https://mail.invalid/{}", links.len() - 1).into(),
+                            );
                         }
                     }
-                    None // no navigation, even inside the sandbox
+                    None
                 }
+                ("img", "src") | (_, "background") => {
+                    let url = web_url(value).ok()?;
+                    let mut images = captured_images.lock().unwrap();
+                    if let Some(index) = images.iter().position(|image| image == &url) {
+                        return Some(format!("https://mail.invalid/{index}").into());
+                    }
+                    if images.len() >= MAX_IMAGES {
+                        return None;
+                    }
+                    images.push(url);
+                    Some(format!("https://mail.invalid/{}", images.len() - 1).into())
+                }
+                ("img", "width" | "height") => value
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|v| (1..=1600).contains(v))
+                    .map(|_| value.into()),
                 (_, "colspan" | "rowspan") => value
                     .parse::<u16>()
                     .ok()
@@ -216,7 +244,15 @@ pub fn render(source: &str) -> Result<Rendered> {
             }
         })
         .clean(source)
-        .to_string();
+        .to_string()
+        // Ammonia serializes attributes with double quotes. Only validated numeric
+        // indices survive here; source-supplied data attributes are never allowed.
+        .replace(" href=\"https://mail.invalid/", " data-mail-link=\"")
+        .replace(" src=\"https://mail.invalid/", " data-mail-image=\"")
+        .replace(
+            " background=\"https://mail.invalid/",
+            " data-mail-background=\"",
+        );
     // Keep the fallback independent of sender CSS, including hidden/white text.
     let mut text = html2text::config::plain()
         .raw_mode(true)
@@ -231,12 +267,45 @@ pub fn render(source: &str) -> Result<Rendered> {
             text.push('\n');
         }
     }
-    Ok(Rendered { html, text, links })
+    let remote_images = images.lock().unwrap().clone();
+    Ok(Rendered {
+        html,
+        text,
+        links,
+        remote_images,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn links_and_images_keep_their_positions_as_inert_indices() {
+        let rendered = render(r#"<p>Visit <a href="https://example.org/page" data-mail-link="99">our page</a>.</p><img src="https://images.example.org/logo.png" alt="Logo" data-mail-image="99"><table background="https://images.example.org/logo.png"><tr><td>Text</td></tr></table>"#).unwrap();
+        assert!(
+            rendered
+                .html
+                .contains(r#"<a data-mail-link="0">our page</a>"#),
+            "{}",
+            rendered.html
+        );
+        assert!(
+            rendered.html.contains(r#"data-mail-image="0""#),
+            "{}",
+            rendered.html
+        );
+        assert!(
+            rendered.html.contains(r#"data-mail-background="0""#),
+            "{}",
+            rendered.html
+        );
+        assert!(!rendered.html.contains("99"));
+        assert_eq!(rendered.links, ["https://example.org/page"]);
+        assert_eq!(
+            rendered.remote_images,
+            ["https://images.example.org/logo.png"]
+        );
+    }
     #[test]
     fn keeps_readable_structure_and_only_non_fetching_inline_styles() {
         let result = render("<h2>Grüße &amp; news</h2><table><tr><th>Item</th><th>Count</th></tr><tr><td><b>Paper</b></td><td>2</td></tr></table><p style='color:blue;font-weight:bold;position:fixed;top:0;background:url(https://tracker.invalid/x)'>Hello</p>").unwrap();

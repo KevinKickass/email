@@ -544,7 +544,7 @@ describe("HTML mail replies", () => {
             to: account.email,
             subject: "Cached email",
             date: new Date().toISOString(),
-            bodyVersion: 1,
+            bodyVersion: 2,
             html: "<h2>HTML-only message</h2><p>Original content</p>",
             body: "HTML-only message\nOriginal content\nhttps://example.org/",
             attachments: [],
@@ -568,4 +568,134 @@ describe("HTML mail replies", () => {
       );
     },
   );
+});
+
+describe("numbered color tags", () => {
+  async function openOnlineMail() {
+    const original = mocks.invoke.getMockImplementation()!;
+    let tags: number[] = [];
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === "list_folders")
+        return (await original("load_startup")).folders;
+      if (command === "list_messages") {
+        const startup = await original("load_startup");
+        return {
+          ...startup.snapshot,
+          offline: false,
+          messages: startup.snapshot.messages.map((mail: object) => ({
+            ...mail,
+            tags,
+          })),
+        };
+      }
+      if (command === "read_message") {
+        const startup = await original("load_startup");
+        return { ...startup.snapshot.messages[0], tags, body: "Message body" };
+      }
+      if (command === "set_message_tag") {
+        tags =
+          args.tag === 0
+            ? []
+            : args.value
+              ? [...tags, args.tag].sort()
+              : tags.filter((id) => id !== args.tag);
+        return tags;
+      }
+      return original(command, args);
+    });
+    mount();
+    await screen.findByText("Cached email");
+    fireEvent.keyDown(window, { key: "F5" });
+    await waitFor(() =>
+      expect(screen.queryAllByText("Cached email").length).toBe(1),
+    );
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("list_messages", {
+        folder: "INBOX",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Cached email/ }));
+    await screen.findByText("Message body");
+    return screen.getByRole("button", { name: /Cached email/ });
+  }
+
+  it("toggles all four colors, keeps them on refresh, and clears them with 0", async () => {
+    let row = await openOnlineMail();
+    for (const tag of [1, 2, 3, 4]) {
+      fireEvent.keyDown(row, { key: String(tag) });
+      await waitFor(() =>
+        expect(mocks.invoke).toHaveBeenCalledWith("set_message_tag", {
+          accountId: JSON.stringify([
+            account.imapHost,
+            account.imapPort,
+            account.username,
+          ]),
+          folder: "INBOX",
+          uid: 1,
+          uidValidity: 7,
+          tag,
+          value: true,
+        }),
+      );
+      await waitFor(() =>
+        expect(
+          screen
+            .getByRole("button", { name: new RegExp(`^${tag}:`) })
+            .getAttribute("aria-pressed"),
+        ).toBe("true"),
+      );
+    }
+    expect(row.getAttribute("data-tag")).toBe("1");
+    fireEvent.keyDown(row, { key: "1" });
+    await waitFor(() => expect(row.getAttribute("data-tag")).toBe("2"));
+    fireEvent.keyDown(window, { key: "F5" });
+    await waitFor(() => expect(screen.queryByText("Message body")).toBeNull());
+    row = await screen.findByRole("button", { name: /Cached email/ });
+    expect(row.getAttribute("data-tag")).toBe("2");
+    fireEvent.click(row);
+    await screen.findByText("Message body");
+    fireEvent.keyDown(row, { key: "0" });
+    await waitFor(() => expect(row.getAttribute("data-tag")).toBeNull());
+  });
+
+  it("ignores typing, modifiers, repeat, hidden selections, and open dialogs", async () => {
+    const row = await openOnlineMail();
+    const search = screen.getByRole("textbox", { name: "Search this folder" });
+    fireEvent.keyDown(search, { key: "1" });
+    for (const modifier of [
+      "ctrlKey",
+      "metaKey",
+      "altKey",
+      "shiftKey",
+      "repeat",
+      "isComposing",
+    ])
+      fireEvent.keyDown(row, { key: "2", [modifier]: true });
+    fireEvent.change(search, { target: { value: "no results" } });
+    fireEvent.keyDown(window, { key: "3" });
+    fireEvent.change(search, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.keyDown(window, { key: "4" });
+    expect(
+      mocks.invoke.mock.calls.some(([cmd]) => cmd === "set_message_tag"),
+    ).toBe(false);
+  });
+
+  it("leaves the existing color intact when saving fails", async () => {
+    const row = await openOnlineMail();
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command, args) =>
+      command === "set_message_tag"
+        ? Promise.reject("Cannot save tag")
+        : original(command, args),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "1: Important (Red)" }));
+    await screen.findByText("Cannot save tag");
+    expect(row.getAttribute("data-tag")).toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: "1: Important (Red)" })
+        .getAttribute("aria-pressed"),
+    ).toBe("false");
+  });
 });

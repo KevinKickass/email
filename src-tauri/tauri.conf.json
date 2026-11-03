@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "email",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "identifier": "de.email.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -25,10 +25,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": [
-      "nsis",
-      "appimage"
-    ],
+    "targets": ["nsis", "appimage"],
     "shortDescription": "Klassischer IMAP- und SMTP-Client",
     "category": "Productivity",
     "icon": [
@@ -42,10 +39,7 @@
         "type": "downloadBootstrapper"
       },
       "nsis": {
-        "languages": [
-          "German",
-          "English"
-        ],
+        "languages": ["German", "English"],
         "displayLanguageSelector": true
       }
     },

@@ -67,10 +67,14 @@ describe("opt-in updater", () => {
     await waitFor(() => expect(h.result.current.preferences.ready).toBe(true));
     vi.useFakeTimers();
     await act(() =>
-      h.result.current.preferences.save({ autoUpdate: true, language: "en" }),
+      h.result.current.preferences.save({
+        autoUpdate: true,
+        language: "en",
+        theme: "system",
+      }),
     );
     expect(mocks.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: { autoUpdate: true, language: "en" },
+      settings: { autoUpdate: true, language: "en", theme: "system" },
     });
     await act(() => vi.advanceTimersByTimeAsync(15_000));
     expect(update.download).toHaveBeenCalledOnce();
@@ -98,7 +102,11 @@ describe("opt-in updater", () => {
     expect(h.result.current.preferences.ready).toBe(true);
     await act(() => vi.advanceTimersByTimeAsync(15_000));
     await act(() =>
-      h.result.current.preferences.save({ autoUpdate: false, language: "de" }),
+      h.result.current.preferences.save({
+        autoUpdate: false,
+        language: "de",
+        theme: "system",
+      }),
     );
     const update = candidate();
     await act(async () => {

@@ -7,6 +7,16 @@ use std::sync::Arc;
 pub struct Settings {
     pub auto_update: bool,
     pub language: Language,
+    pub theme: Theme,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -56,6 +66,11 @@ mod tests {
         let migrated: Settings = serde_json::from_str(r#"{"language":"en"}"#).unwrap();
         assert!(!migrated.auto_update);
         assert!(matches!(migrated.language, Language::En));
+        assert!(matches!(migrated.theme, Theme::System));
+        let dark: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert!(matches!(dark.theme, Theme::Dark));
+        assert_eq!(serde_json::to_value(dark).unwrap()["theme"], "dark");
+        assert!(serde_json::from_str::<Settings>(r#"{"theme":"invalid"}"#).is_err());
         assert!(serde_json::from_str::<Settings>(r#"{"language":"invalid"}"#).is_err());
     }
 }

@@ -1,7 +1,7 @@
 # HTML reading and privacy
 
 email displays a conservative HTML subset. The goal is readable mail with no
-sender-controlled requests or executable content inside the application.
+automatic sender-controlled requests or executable content inside the application.
 
 ## Boundaries
 
@@ -16,25 +16,41 @@ sender-controlled requests or executable content inside the application.
    A small set of non-fetching inline properties preserves basic colours,
    emphasis and alignment. CSS functions, escapes, positioning, sizes, imports,
    custom properties and external fonts are excluded.
-3. `MessageBody` accepts only the current body format and places the result in an
-   iframe with an empty `sandbox` attribute and `referrerpolicy="no-referrer"`.
-   It grants neither scripts nor same-origin access, forms, popups or top-level
-   navigation. A static CSP precedes the content: all resources are denied except
-   the viewer's inline styles. This is separate from the application CSP, which
-   permits only local frames. See the [srcdoc security guidance](https://developer.mozilla.org/en-US/docs/Web/API/HTMLIFrameElement/srcdoc).
-4. Sanitised HTML has no navigable links. Up to 100 distinct absolute HTTP/HTTPS
-   destinations are listed outside the iframe. A click on the visible destination
-   calls a Rust command which validates it again before opening the default
-   browser. URLs with credentials, controls, other schemes or more than 2,048
-   bytes are rejected. Host names are canonicalised, including IDN/punycode.
-   The opener plugin's automatic JavaScript link handling is explicitly disabled;
-   no general frontend filesystem or opener permission is granted. See the
-   [Tauri opener](https://v2.tauri.app/plugin/opener/) documentation.
+3. `MessageBody` accepts body format 2 and places it in an iframe with
+   `sandbox="allow-same-origin"` and `referrerpolicy="no-referrer"`. Scripts, forms,
+   popups and top-level navigation remain disabled. Same-origin access lets trusted
+   parent code attach click handlers and insert approved images; **allow-scripts is
+   never granted**. A static CSP precedes the content: scripts, connections, frames,
+   fonts and media are forbidden; only inline styles and raster data images are used.
+   The application CSP still permits only local frames and data/local images.
+4. Link labels and positions survive sanitisation as inert `data-mail-link` indices.
+   Source-provided data attributes are discarded. The trusted parent assigns link
+   semantics, keyboard focus and click/Enter handlers, without a navigable `href`.
+   Hover/focus shows the actual HTTP/HTTPS destination. Explicit activation calls a
+   Rust command which validates it again before opening the default browser. Up to
+   100 distinct URLs are supported. Credentials, controls, other schemes and URLs
+   over 2,048 bytes are rejected. The opener plugin's automatic link handling stays
+   disabled. Links are inactive in the sample mailbox.
+5. Remote image URLs and legacy table/cell backgrounds become inert indices into a
+   separate, bounded list. A banner explains that loading them may reveal that the
+   message was opened. Only **Load images** starts the native request, bound to the
+   active account, folder, UIDVALIDITY and UID of a cached message. IPC accepts image
+   indices, never arbitrary fetch URLs. Successes are shown; failures can be retried
+   without re-fetching successful images. **Block images again** removes them.
+   Navigating to another message discards consent and ignores late results.
+6. The native loader validates HTTP/HTTPS URLs and every redirect, restricts ports
+   to 80/443, rejects private/local/reserved IPs, and pins checked DNS addresses for
+   the request. HTTPS cannot redirect to HTTP. No proxy, browser cookies,
+   authentication or referrer is forwarded. Redirects, request duration, image count
+   (50), each image (5 MiB) and total successful payload (20 MiB) are bounded.
+   Only PNG, JPEG, GIF and WebP signatures become raster data URLs. SVG, HTML and
+   other active content are rejected even if a server labels them as an image.
+   Downloaded image bytes live in the current reader; they are not persisted.
 
-All images are blocked, including remote tracking pixels, data URLs and inline/CID
-images. Alternative text may appear, and MIME image attachments can still be saved
-through the attachment workflow. There is no remote-images toggle yet. Links are
-inactive in the sample mailbox.
+Sender scripts, forms, frames, external stylesheets/fonts, CSS URLs and inline/CID
+images are not enabled by the image button. MIME image attachments can still be
+saved through the attachment workflow. The browser preview does not fetch remote
+images.
 
 ## Text fallback and caches
 
@@ -82,12 +98,13 @@ node scripts/html-smoke.mjs
 
 Open `http://127.0.0.1:4174`. The script runs the actual Rust sanitizer on the fixture
 and uses the production document wrapper. Both the sanitised mail and an
-unsanitised control must remain readable, both origin checks must report an
-opaque origin, and the parent sentinel must remain unchanged. Do not follow links
+unsanitised control must remain readable, both frame checks must report script blocking with parent handlers available,
+and the parent sentinel must remain unchanged. Clicking the link in the sanitised
+frame must report its real destination without navigating the frame. Do not follow links
 in the raw control. `http://127.0.0.1:4174/status` must report `{"probes":0}`.
 Stop the server with Ctrl+C. The fixture's resource probes target only this server.
 
-This check was run in Chromium for 0.4.0 with no probe requests. CI runs the
+The regression check exercises both a sanitised message and a hostile raw control. CI runs the
 Rust and UI tests on Windows x64, Windows x86 and Linux x64. Native WebView2 and
 WebKitGTK GUI behaviour and real-provider integration need additional manual tests;
 a browser check is not a substitute for those platform tests.

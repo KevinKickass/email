@@ -1,4 +1,9 @@
 :root {
+  --tag-1: #b52d38;
+  --tag-2: #995200;
+  --tag-3: #267243;
+  --tag-4: #245fbd;
+  color-scheme: light;
   font-family: "Segoe UI", Tahoma, Arial, sans-serif;
   color: #26394b;
   background: #edf1f5;
@@ -1615,4 +1620,433 @@ p {
 .message-links svg {
   flex-shrink: 0;
   margin-top: 2px;
+}
+
+/* Shared dark palette covers the mailbox, calendar and every dialog. */
+:root[data-theme="dark"] {
+  --tag-1: #ff9ca4;
+  --tag-2: #ffc078;
+  --tag-3: #8cdda6;
+  --tag-4: #9cc5ff;
+  color-scheme: dark;
+  --surface: #18212c;
+  --surface-raised: #202c3a;
+  --surface-hover: #2b3c50;
+  --surface-selected: #2c4663;
+  --text: #d5dfeb;
+  --text-strong: #e4edf7;
+  --muted: #a7b8ca;
+  --blue: #8dbcf0;
+  --line: #3a4b5f;
+  color: var(--text);
+  background: var(--surface);
+}
+:root[data-theme="dark"]
+  :is(
+    .titlebar,
+    .tabs,
+    .ribbon,
+    .sidebar,
+    .navigation,
+    .statusbar,
+    .dialog-title,
+    .dialog-footer,
+    .compose-toolbar,
+    .compose-note,
+    .list-group,
+    .body-toolbar,
+    .calendar-info,
+    .caldav-section,
+    .account-dialog,
+    .settings-dialog,
+    .standard-button,
+    .local-work-button
+  ) {
+  background: var(--surface-raised);
+  color: var(--text);
+  border-color: var(--line);
+  box-shadow: none;
+}
+:root[data-theme="dark"]
+  :is(
+    input,
+    select,
+    textarea,
+    .language-field select,
+    .compose-field select,
+    .move-select,
+    .search,
+    .mail-area,
+    .message-list,
+    .mail-row,
+    .reading-pane,
+    .calendar-view,
+    .compose-dialog,
+    .work-dialog,
+    .attachment-progress,
+    .html-reader iframe
+  ) {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--line);
+}
+:root[data-theme="dark"]
+  :is(
+    .ribbon-group,
+    .sidebar-heading,
+    .account-tree,
+    .mail-heading,
+    .search-scope,
+    .list-toolbar,
+    .reading-actions,
+    .message-header,
+    .reading-footer,
+    .statusbar > span,
+    .server-section,
+    .compose-field,
+    .calendar-toolbar,
+    .weekdays,
+    .weekdays > b,
+    .month-grid > div,
+    .work-entry
+  ) {
+  border-color: var(--line);
+}
+:root[data-theme="dark"]
+  :is(
+    .tool,
+    .tree-heading,
+    .folder,
+    .reading-actions button,
+    .message-body,
+    .sender-details b,
+    .row-subject,
+    .settings-content p,
+    .form-grid label,
+    .server-grid label,
+    .checkbox-label,
+    .body-toolbar button,
+    .message-links summary,
+    .work-entry > span,
+    .work-content > p,
+    .attachment-limit,
+    .mini-calendar > b,
+    .mini-calendar span,
+    .calendar-key,
+    .weekdays > b,
+    .month-grid > div
+  ) {
+  color: var(--text);
+}
+:root[data-theme="dark"]
+  :is(
+    .sidebar-heading,
+    .mail-heading h1,
+    .message-header h2,
+    .account-intro h2,
+    .server-section h3,
+    .caldav-section h3,
+    .calendar-toolbar h1,
+    .settings-content h2,
+    .work-content h2,
+    .mail-row.unread .row-top > span,
+    .mail-row.unread .row-subject
+  ) {
+  color: var(--text-strong);
+}
+:root[data-theme="dark"]
+  :is(
+    .brand > span:last-child,
+    .version,
+    .group-label,
+    .ribbon-hint,
+    .sidebar-note,
+    .sidebar-note small,
+    .mail-heading > div > span,
+    .search-scope,
+    .list-tabs button,
+    .list-toolbar > span,
+    .list-group > span,
+    .mail-indicator,
+    .row-top time,
+    .row-preview,
+    .plain-label,
+    .sender-details > span,
+    .sender-details small,
+    .sender-line time,
+    .attachments small,
+    .reading-footer,
+    .empty,
+    .empty > svg,
+    .empty h3,
+    .account-intro p,
+    .server-section h3 span,
+    .caldav-section h3 span,
+    .caldav-section p,
+    .field-note,
+    .dialog-footer > span,
+    .compose-from,
+    .compose-field > span,
+    .calendar-sidebar p,
+    .mini-calendar small,
+    .calendar-toolbar > span,
+    .message-links button:disabled
+  ) {
+  color: var(--muted);
+}
+:root[data-theme="dark"] :is(input, textarea)::placeholder {
+  color: var(--muted);
+}
+:root[data-theme="dark"]
+  :is(
+    .tabs .help,
+    .folder b,
+    .folder svg,
+    .folder.chosen svg,
+    .navigation > button,
+    .list-tabs button.chosen,
+    .mail-row.unread .row-top time,
+    .text-button,
+    .message-links button,
+    .new-mail-icon,
+    .blue-icon
+  ) {
+  color: var(--blue);
+}
+:root[data-theme="dark"] .red-icon {
+  color: #ed9698;
+}
+:root[data-theme="dark"] .purple-icon {
+  color: #bda5e5;
+}
+:root[data-theme="dark"] .new-mail-icon svg:last-child {
+  background: var(--surface-raised);
+  color: #8bd3a2;
+}
+:root[data-theme="dark"] button:not(:disabled):hover {
+  background: var(--surface-hover);
+  border-color: #6383a6;
+}
+:root[data-theme="dark"] :is(button, input, select, textarea):focus-visible {
+  outline-color: var(--blue);
+}
+:root[data-theme="dark"]
+  :is(
+    .tabs > button.active,
+    .folder.chosen,
+    .navigation > button.chosen,
+    .mail-row.selected,
+    .body-toolbar button[aria-pressed="true"],
+    .mini-calendar span.today
+  ) {
+  background: var(--surface-selected);
+  border-color: #6383a6;
+  color: var(--text-strong);
+  box-shadow: none;
+}
+:root[data-theme="dark"] .mail-row.selected {
+  box-shadow: inset 3px 0 var(--blue);
+}
+:root[data-theme="dark"] .mail-row:hover {
+  background: var(--surface-hover) !important;
+  border-color: var(--line) !important;
+}
+:root[data-theme="dark"] .mail-row.selected:hover {
+  background: var(--surface-selected) !important;
+}
+:root[data-theme="dark"]
+  :is(.avatar, .account-symbol, .attachments > span, .attachments > button) {
+  background: var(--surface-raised);
+  border-color: var(--line);
+  color: var(--blue);
+}
+:root[data-theme="dark"] :is(.primary-button, .tabs .file-tab) {
+  background: #355e88;
+  border-color: #6383a6;
+  color: #fff;
+}
+:root[data-theme="dark"]
+  :is(.primary-button, .tabs .file-tab):not(:disabled):hover {
+  background: #426f9d;
+}
+:root[data-theme="dark"] .demo-bar {
+  background: #343023;
+  border-color: #635637;
+  color: #e3cd92;
+}
+:root[data-theme="dark"] :is(.demo-bar button, .html-notice) {
+  color: #e3cd92;
+}
+:root[data-theme="dark"]
+  :is(.error-bar, .form-error, .settings-content .form-error) {
+  background: #3e282d;
+  border-color: #86515a;
+  color: #ffb4af;
+}
+:root[data-theme="dark"] .form-result {
+  background: #243b30;
+  border-color: #527c60;
+  color: #aedcb6;
+}
+:root[data-theme="dark"] .update-dot {
+  background: #8bd3a2;
+}
+:root[data-theme="dark"] .work-entry.pending {
+  border-left-color: #e0b35f;
+}
+:root[data-theme="dark"] .modal-backdrop {
+  background: #080e18b3;
+}
+:root[data-theme="dark"] .month-grid > div:nth-child(7n),
+:root[data-theme="dark"] .month-grid > div:nth-child(7n-1) {
+  background: var(--surface-raised);
+}
+:root[data-theme="dark"] .month-grid > div.other-month {
+  background: #141c25;
+  color: #8295a9;
+}
+:root[data-theme="dark"] .month-grid > div.today {
+  background: #343023;
+  box-shadow: inset 0 0 0 1px #9e8147;
+}
+:root[data-theme="dark"]
+  :is(.month-grid > div.today > span, .calendar-key > span) {
+  background: #735a2f;
+  border-color: #9e8147;
+  color: #fff0ce;
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: #50647b;
+  border-color: var(--surface);
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-track {
+  background: var(--surface);
+}
+
+/* Numbered tags use the same palette in controls, rows and badges. */
+[data-tag="1"] {
+  --tag-color: var(--tag-1);
+}
+[data-tag="2"] {
+  --tag-color: var(--tag-2);
+}
+[data-tag="3"] {
+  --tag-color: var(--tag-3);
+}
+[data-tag="4"] {
+  --tag-color: var(--tag-4);
+}
+.tag-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+  font-size: 11px;
+}
+.tag-toolbar > span {
+  margin-right: 7px;
+  color: var(--muted);
+}
+.tag-toolbar kbd {
+  font: inherit;
+  font-weight: 600;
+}
+.tag-toolbar .tag-button {
+  color: var(--tag-color);
+  padding: 4px 7px;
+  gap: 5px;
+}
+.tag-toolbar .tag-button[aria-pressed="true"] {
+  border-color: var(--tag-color);
+  background: color-mix(in srgb, var(--tag-color) 12%, transparent);
+}
+.tag-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--tag-color);
+}
+.clear-tags {
+  padding: 4px 7px;
+}
+.mail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+.tag-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--tag-color);
+  border: 1px solid color-mix(in srgb, var(--tag-color) 45%, transparent);
+  background: color-mix(in srgb, var(--tag-color) 8%, transparent);
+  border-radius: 3px;
+  padding: 2px 5px;
+}
+:root .mail-row[data-tag] {
+  border-left: 3px solid var(--tag-color);
+  border-left-color: var(--tag-color) !important;
+  padding-left: 5px;
+}
+:root .mail-row[data-tag] .row-top > span,
+:root .mail-row[data-tag] .row-subject {
+  color: var(--tag-color);
+}
+
+.remote-content-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 24px;
+  background: #fbf8e9;
+  color: #715a22;
+  border-bottom: 1px solid #e1d9b8;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.remote-content-banner > div {
+  flex: 1;
+  min-width: 180px;
+}
+.remote-content-banner p {
+  line-height: 1.5;
+}
+.remote-content-banner small {
+  display: block;
+  margin-top: 3px;
+  line-height: 1.5;
+}
+.link-preview {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 24px;
+  color: #255e96;
+  background: #f3f6f9;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.link-preview bdi {
+  min-width: 0;
+}
+.reader-error {
+  margin: 12px 30px;
+}
+:root[data-theme="dark"] .remote-content-banner {
+  background: #343023;
+  border-color: #635637;
+  color: #e3cd92;
+}
+:root[data-theme="dark"] .link-preview {
+  background: var(--surface-raised);
+  color: var(--blue);
 }

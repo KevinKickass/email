@@ -3,6 +3,7 @@ mod folders;
 mod html;
 mod mail;
 mod outbox;
+mod remote_content;
 mod settings;
 use mail::{Account, Credentials, Draft, Folder, Mail, Snapshot};
 use mail_store::Store;
@@ -381,6 +382,64 @@ async fn set_flag(
     .await
 }
 
+#[tauri::command]
+async fn set_message_tag(
+    state: tauri::State<'_, Arc<Backend>>,
+    account_id: String,
+    folder: String,
+    uid: u32,
+    uid_validity: u32,
+    tag: u8,
+    value: bool,
+) -> Result<Vec<u8>> {
+    let state = Arc::clone(&state);
+    blocking(move || {
+        let _guard = state
+            .operation
+            .lock()
+            .map_err(|_| "Kontozustand nicht verfügbar.")?;
+        state.check_account(&account_id)?;
+        let credentials = state.credentials()?;
+        let tags = mail::set_tag(&credentials, &folder, uid, uid_validity, tag, value)?;
+        cache_tags(&state.store, &account_id, &folder, uid_validity, uid, &tags)?;
+        Ok(tags)
+    })
+    .await
+}
+
+fn cache_tags(
+    store: &Store,
+    account: &str,
+    folder: &str,
+    validity: u32,
+    uid: u32,
+    tags: &[u8],
+) -> Result<()> {
+    let snapshot_key = snapshot_key(account, folder);
+    let body_key = mail_store::message_key(account, folder, validity, uid);
+    let mut changes = vec![];
+    if let Some(mut snapshot) = store
+        .get::<Snapshot>(&snapshot_key)
+        .map_err(|e| e.to_string())?
+    {
+        if snapshot.uid_validity == validity {
+            if let Some(message) = snapshot
+                .messages
+                .iter_mut()
+                .find(|message| message.uid == uid)
+            {
+                message.tags = tags.to_vec();
+            }
+            changes.push((snapshot_key, Some(serde_json::to_vec(&snapshot).unwrap())));
+        }
+    }
+    if let Some(mut message) = store.get::<Mail>(&body_key).map_err(|e| e.to_string())? {
+        message.tags = tags.to_vec();
+        changes.push((body_key, Some(serde_json::to_vec(&message).unwrap())));
+    }
+    store.batch(&changes).map_err(|e| e.to_string())
+}
+
 fn snapshot_key(account: &str, folder: &str) -> String {
     serde_json::to_string(&("snapshot-v1", account, folder)).unwrap()
 }
@@ -561,6 +620,50 @@ async fn send_message(
 }
 
 #[tauri::command]
+async fn load_message_images(
+    state: tauri::State<'_, Arc<Backend>>,
+    location: MessageLocation,
+    indices: Vec<usize>,
+) -> Result<remote_content::Loaded> {
+    let state = Arc::clone(&state);
+    blocking(move || {
+        let sources = {
+            let _guard = state
+                .operation
+                .lock()
+                .map_err(|_| "Kontozustand nicht verfügbar.")?;
+            state.check_account(&location.account_id)?;
+            let key = mail_store::message_key(
+                &location.account_id,
+                &location.folder,
+                location.uid_validity,
+                location.uid,
+            );
+            let message = state
+                .store
+                .get::<Mail>(&key)
+                .map_err(|e| e.to_string())?
+                .ok_or("Bitte öffnen Sie die Nachricht erneut.")?;
+            if message.body_version != mail::BODY_VERSION {
+                return Err("Bitte öffnen Sie die Nachricht erneut.".into());
+            }
+            message.remote_images
+        };
+        remote_content::load(&sources, &indices)
+    })
+    .await
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MessageLocation {
+    account_id: String,
+    folder: String,
+    uid: u32,
+    uid_validity: u32,
+}
+
+#[tauri::command]
 async fn open_web_link(app: tauri::AppHandle, url: String) -> Result<()> {
     let url = html::web_url(&url)?;
     blocking(move || {
@@ -607,6 +710,7 @@ pub fn run() {
             save_attachment,
             forward_attachments,
             set_flag,
+            set_message_tag,
             load_startup,
             list_folders,
             local_work,
@@ -616,9 +720,85 @@ pub fn run() {
             send_message,
             probe_caldav,
             open_web_link,
+            load_message_images,
             settings::load_settings,
             settings::save_settings
         ])
         .run(tauri::generate_context!())
         .expect("email konnte nicht gestartet werden");
+}
+
+#[cfg(test)]
+mod tag_cache_tests {
+    use super::*;
+
+    #[test]
+    fn tags_survive_reopen_without_leaking_across_accounts_folders_or_uidvalidity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tags.redb");
+        let message: Mail = serde_json::from_value(serde_json::json!({
+            "uid": 9, "from": "a@example.org", "replyTo": "", "to": "b@example.org",
+            "subject": "Tagged message", "date": "", "unread": true,
+            "flagged": true, "size": 20, "body": "Message", "attachments": []
+        }))
+        .unwrap();
+        {
+            let store = Store::open(&path).unwrap();
+            for (account, folder) in [("a", "INBOX"), ("a", "Sent"), ("b", "INBOX")] {
+                store
+                    .put(
+                        &snapshot_key(account, folder),
+                        &Snapshot {
+                            messages: vec![message.clone()],
+                            uid_validity: 4,
+                            offline: true,
+                            warning: None,
+                        },
+                    )
+                    .unwrap();
+                for validity in [3, 4] {
+                    store
+                        .put(
+                            &mail_store::message_key(account, folder, validity, 9),
+                            &message,
+                        )
+                        .unwrap();
+                }
+            }
+            cache_tags(&store, "a", "INBOX", 4, 9, &[1, 4]).unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let saved = store
+            .get::<Snapshot>(&snapshot_key("a", "INBOX"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.messages[0].tags, vec![1, 4]);
+        assert!(saved.messages[0].unread && saved.messages[0].flagged);
+        for (account, folder, validity) in [
+            ("a", "INBOX", 4),
+            ("a", "INBOX", 3),
+            ("a", "Sent", 4),
+            ("b", "INBOX", 4),
+        ] {
+            let cached = store
+                .get::<Mail>(&mail_store::message_key(account, folder, validity, 9))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                cached.tags,
+                if account == "a" && folder == "INBOX" && validity == 4 {
+                    vec![1, 4]
+                } else {
+                    vec![]
+                }
+            );
+        }
+        // An older operation must not recolor a replacement snapshot with reused UIDs.
+        cache_tags(&store, "a", "INBOX", 3, 9, &[2]).unwrap();
+        let current = store
+            .get::<Snapshot>(&snapshot_key("a", "INBOX"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.messages[0].tags, vec![1, 4]);
+    }
 }

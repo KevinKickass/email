@@ -31,6 +31,12 @@ const compiled = ts.transpileModule(
 const { htmlDocument } = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`
 );
+const frameCode = ts.transpileModule(readFileSync("src/mailFrame.ts", "utf8"), {
+  compilerOptions: {
+    module: ts.ModuleKind.ESNext,
+    target: ts.ScriptTarget.ES2021,
+  },
+}).outputText;
 const escape = (value) =>
   value
     .replaceAll("&", "&amp;")
@@ -38,8 +44,8 @@ const escape = (value) =>
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
 const frame = (title, html) =>
-  `<h2>${title}</h2><iframe title="${title}" sandbox="" referrerpolicy="no-referrer" srcdoc="${escape(htmlDocument(html))}"></iframe>`;
-const page = `<!doctype html><html><head><meta charset="utf-8"><title>email HTML privacy regression</title><script src="/check.js" defer></script><style>body{font:16px sans-serif;margin:24px}iframe{width:95%;height:350px;border:1px solid #aaa}</style></head><body><h1>email HTML privacy regression</h1><p id="sentinel">Parent unchanged</p><p>Both frames must remain readable. The server must report zero /probe requests. Do not follow links in the raw control.</p>${frame("Sanitised mail", clean.html)}${frame("Unsanitised sandbox control", raw)}</body></html>`;
+  `<h2>${title}</h2><iframe title="${title}" sandbox="allow-same-origin" referrerpolicy="no-referrer" srcdoc="${escape(htmlDocument(html))}"></iframe>`;
+const page = `<!doctype html><html><head><meta charset="utf-8"><title>email HTML privacy regression</title><script src="/check.js" type="module"></script><style>body{font:16px sans-serif;margin:24px}iframe{width:95%;height:350px;border:1px solid #aaa}</style></head><body><h1>email HTML privacy regression</h1><p id="sentinel">Parent unchanged</p><p id="link-result">No link opened</p><p id="link-preview"></p><p>Both frames must remain readable. The server must report zero /probe requests. Do not follow links in the raw control.</p>${frame("Sanitised mail", clean.html)}${frame("Unsanitised sandbox control", raw)}</body></html>`;
 const csp = JSON.parse(readFileSync("src-tauri/tauri.conf.json", "utf8")).app
   .security.csp;
 let probes = 0;
@@ -51,16 +57,25 @@ createServer((req, res) => {
     res.end();
     return;
   }
+  if (req.url === "/frame.js") {
+    res.setHeader("Content-Type", "application/javascript");
+    res.end(frameCode);
+    return;
+  }
   if (req.url === "/check.js") {
     res.setHeader("Content-Type", "application/javascript");
-    res.end(`window.addEventListener('load', () => {
-      document.querySelectorAll('iframe').forEach((frame) => {
+    res.end(`import { bindMailFrame } from '/frame.js';
+    window.addEventListener('load', () => {
+      document.querySelectorAll('iframe').forEach((frame, index) => {
         const result = document.createElement('p');
         result.className = 'origin-check';
-        let blocked = false;
-        try { void frame.contentWindow.document; } catch (e) { blocked = e.name === 'SecurityError'; }
-        result.textContent = frame.title + ': ' + (blocked && frame.contentDocument === null ? 'opaque origin confirmed' : 'UNEXPECTED FRAME ACCESS');
+        result.textContent = frame.title + ': ' + (frame.contentDocument && !frame.sandbox.contains('allow-scripts') ? 'parent handlers available; sender scripts blocked' : 'UNEXPECTED FRAME POLICY');
         document.body.append(result);
+        if (index === 0 && frame.contentDocument) {
+          bindMailFrame(frame.contentDocument, ${JSON.stringify(clean.links)}, false,
+            (url) => { document.getElementById('link-result').textContent = 'Explicit link click: ' + url; },
+            (url) => { document.getElementById('link-preview').textContent = url; });
+        }
       });
     });`);
     return;

@@ -4,7 +4,7 @@ A classic desktop email client with a ribbon, folder tree, message list and read
 pane. An original interface inspired by familiar Outlook 2010-era workflows, with
 German and English language support.
 
-**Version 0.4.0 — technical preview.** This is not yet a production-ready replacement
+**Version 0.5.0 — technical preview.** This is not yet a production-ready replacement
 for customer deployments. The browser preview uses clearly labelled sample data;
 real email connections are available in the Tauri desktop app.
 
@@ -52,6 +52,12 @@ before running `npm run desktop`; Tauri starts its own development server.
 - Classic ribbon, folder navigation, optional reading pane and compact message list.
 - Search loaded senders, recipients and subjects; filter unread or flagged messages.
   `F5` refreshes the folder; `Ctrl+N` opens a draft.
+- Select a message and press `1` (red, Important), `2` (orange, Work), `3` (green,
+  Personal) or `4` (blue, To do) to toggle a color tag. Press `0` to clear these
+  four tags, or use the buttons above the message list. Multiple tags are supported;
+  the first tag determines the sender/subject color. Typing in fields is unaffected.
+  Tags use Thunderbird-compatible IMAP keywords (`$label1`–`$label4`) and are cached
+  for offline display. Changing tags requires a connection and server keyword support.
 - Manual setup of one account using IMAP and SMTP with TLS or mandatory STARTTLS.
   Both logins are tested before saving, without sending a test message. Separate
   SMTP credentials are supported.
@@ -61,10 +67,12 @@ before running `npm run desktop`; Tauri starts its own development server.
 - Decode MIME character sets and encoded subjects; read sanitised HTML with a
   **Plain text** switch. Tables, lists, headings, emphasis, quotations and basic inline
   colours/alignment are supported. HTML is sanitised in Rust and displayed in an
-  isolated, scriptless frame. Images, forms and other active content stay blocked,
-  including inline/CID images. See [HTML reading and privacy](docs/html-security.md).
-- Actual web-link destinations appear below the message and open in the default
-  browser only when clicked. HTML-only mail gets a text conversion for replies and
+  scriptless sandbox. A banner offers **Load images** for blocked remote images;
+  permission applies only to the open message and can be revoked. Scripts, forms,
+  stylesheets and inline/CID images remain blocked. See [HTML reading and privacy](docs/html-security.md).
+- Links retain their text and position inside the message. Hover/focus displays the
+  actual destination; clicking opens the default browser. A separate destination
+  list remains available below the message. HTML-only mail gets a text conversion for replies and
   forwards. Existing text alternatives remain available. HTML over 2 MiB or excessive
   complexity falls back to text when available, with an explanation.
 - Save attachments through native **Save as** dialogs. Files are saved to the chosen
@@ -171,9 +179,13 @@ npm run tauri -- build --target i686-pc-windows-msvc --bundles nsis --config '{"
 To bundle an already built application again, use `tauri bundle` with the same
 bundle and signing configuration.
 
-## Language and updates
+## Appearance, language and updates
 
-**Settings** offers Deutsch, English and automatic system-language detection.
+**Settings → Appearance** offers Light, Dark and automatic system-theme detection.
+The choice is saved; system mode follows appearance changes while the app is open.
+The mailbox, calendar, dialogs and formatted message reader share the selected theme.
+
+**Settings** also offers Deutsch, English and automatic system-language detection.
 Other system languages fall back to English. The selected language and update
 preference are saved in redb independently of email accounts. Email content and
 server-defined folder names remain in their original language.

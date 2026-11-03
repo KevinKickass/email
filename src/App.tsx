@@ -13,6 +13,7 @@ import MessageBody from "./MessageBody";
 import SettingsDialog from "./SettingsDialog";
 import { useUpdates } from "./updates";
 import { useI18n } from "./i18n";
+import { mailTags, tagShortcut, toggleTag } from "./tags";
 import { version } from "../package.json";
 import {
   Mail as MailIcon,
@@ -144,6 +145,7 @@ export default function App() {
   live.current = { draft, account, sendBusy, attachmentBusy, demo };
   const requestId = useRef(0);
   const bodyId = useRef(0);
+  const tagging = useRef(false);
   const active = useRef({ demo, folder, uidValidity });
   active.current = { demo, folder, uidValidity };
 
@@ -450,6 +452,49 @@ export default function App() {
     }
   }
 
+  async function setTag(tag: number) {
+    const mail = visible.find((m) => m.uid === selected);
+    if (!mail || busy || tagging.current || (!demo && offline)) return;
+    const scope = active.current;
+    const request = requestId.current;
+    tagging.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const tags = demo
+        ? toggleTag(mail.tags ?? [], tag)
+        : await invoke<number[]>("set_message_tag", {
+            accountId: accountIdentity(account!),
+            folder,
+            uid: mail.uid,
+            uidValidity,
+            tag,
+            value: tag !== 0 && !mail.tags?.includes(tag),
+          });
+      if (
+        request !== requestId.current ||
+        scope.folder !== active.current.folder ||
+        scope.demo !== active.current.demo ||
+        scope.uidValidity !== active.current.uidValidity
+      )
+        return;
+      setMessages((old) =>
+        old.map((m) => (m.uid === mail.uid ? { ...m, tags } : m)),
+      );
+      setMessage((old) => (old?.uid === mail.uid ? { ...old, tags } : old));
+      setNotice(t("Farbmarkierungen gespeichert."));
+    } catch (e) {
+      if (
+        request === requestId.current &&
+        scope.folder === active.current.folder
+      )
+        setError(String(e));
+    } finally {
+      tagging.current = false;
+      if (request === requestId.current) setBusy(false);
+    }
+  }
+
   function targetFor(role: string) {
     if (demo) return role[0].toUpperCase() + role.slice(1);
     const matching = folders.filter((f) => f.selectable && f.role === role);
@@ -695,6 +740,18 @@ export default function App() {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      const tag = tagShortcut(e);
+      if (
+        tag !== null &&
+        !modalOpen &&
+        view === "mail" &&
+        !busy &&
+        (demo || !offline) &&
+        visible.some((m) => m.uid === selected)
+      ) {
+        e.preventDefault();
+        void setTag(tag);
+      }
       if (e.key === "F5" && !modalOpen && !busy) {
         e.preventDefault();
         void refresh();
@@ -1196,6 +1253,51 @@ export default function App() {
                 <span className="search-scope">{t("Absender / Betreff")} </span>
               </label>
             </div>
+            <div
+              className="tag-toolbar"
+              role="group"
+              aria-label={t("Farbmarkierungen")}
+            >
+              <span>{t("Farbmarkierungen")}</span>
+              {mailTags.map((tag) => (
+                <button
+                  key={tag.id}
+                  className="tag-button"
+                  data-tag={tag.id}
+                  aria-label={`${tag.id}: ${t(tag.name)} (${t(tag.color)})`}
+                  aria-keyshortcuts={String(tag.id)}
+                  aria-pressed={selectedMail?.tags?.includes(tag.id) ?? false}
+                  title={t("Taste {key}: Markierung umschalten", {
+                    key: tag.id,
+                  })}
+                  disabled={
+                    busy ||
+                    (!demo && offline) ||
+                    !visible.some((m) => m.uid === selected)
+                  }
+                  onClick={() => void setTag(tag.id)}
+                >
+                  <span className="tag-dot" />
+                  <kbd>{tag.id}</kbd> {t(tag.name)}
+                </button>
+              ))}
+              <button
+                className="clear-tags"
+                aria-label={t("Farbmarkierungen entfernen")}
+                aria-keyshortcuts="0"
+                title={t("Taste 0: Farbmarkierungen entfernen")}
+                disabled={
+                  busy ||
+                  (!demo && offline) ||
+                  !visible.some((m) => m.uid === selected) ||
+                  !selectedMail?.tags?.length
+                }
+                onClick={() => void setTag(0)}
+              >
+                <X size={13} />
+                <kbd>0</kbd>
+              </button>
+            </div>
             <div className={`mail-panes ${reading ? "" : "without-reading"}`}>
               <section className="message-list" aria-label={t("Nachrichten")}>
                 <div className="list-toolbar">
@@ -1260,6 +1362,9 @@ export default function App() {
                         key={m.uid}
                         disabled={!demo && busy}
                         className={`mail-row ${m.unread ? "unread" : ""} ${selected === m.uid ? "selected" : ""}`}
+                        data-tag={
+                          mailTags.find((tag) => m.tags?.includes(tag.id))?.id
+                        }
                         onClick={() => void openMail(m)}
                       >
                         <div className="mail-indicator">
@@ -1284,6 +1389,22 @@ export default function App() {
                               .slice(1)
                               .join(" ") || emailAddress(m.from)}
                           </div>
+                          {!!m.tags?.length && (
+                            <div className="mail-tags">
+                              {mailTags
+                                .filter((tag) => m.tags?.includes(tag.id))
+                                .map((tag) => (
+                                  <span
+                                    className="tag-badge"
+                                    data-tag={tag.id}
+                                    key={tag.id}
+                                  >
+                                    <span className="tag-dot" />
+                                    {t(tag.name)}
+                                  </span>
+                                ))}
+                            </div>
+                          )}
                         </div>
                       </button>
                     ))
@@ -1380,6 +1501,16 @@ export default function App() {
                         ])}
                         message={message}
                         demo={demo}
+                        location={
+                          account && !demo
+                            ? {
+                                accountId: accountIdentity(account),
+                                folder,
+                                uid: message.uid,
+                                uidValidity,
+                              }
+                            : undefined
+                        }
                       />
                     </>
                   ) : (

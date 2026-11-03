@@ -145,6 +145,8 @@ pub struct Mail {
     pub date: String,
     pub unread: bool,
     pub flagged: bool,
+    #[serde(default)]
+    pub tags: Vec<u8>,
     pub size: u32,
     pub body: Option<String>,
     #[serde(default)]
@@ -153,6 +155,8 @@ pub struct Mail {
     pub html_warning: Option<String>,
     #[serde(default)]
     pub links: Vec<String>,
+    #[serde(default)]
+    pub remote_images: Vec<String>,
     #[serde(default)]
     pub body_version: u8,
     pub attachments: Vec<String>,
@@ -287,11 +291,13 @@ fn parse_header(raw: &[u8], uid: u32, unread: bool, flagged: bool, size: u32) ->
         date: get("Date"),
         unread,
         flagged,
+        tags: vec![],
         size,
         body: None,
         html: None,
         html_warning: None,
         links: vec![],
+        remote_images: vec![],
         body_version: 0,
         attachments: vec![],
         attachment_sizes: vec![],
@@ -322,7 +328,7 @@ pub fn list(c: &Credentials, folder: &str) -> Result<Snapshot> {
             .map_err(|_| "Nachrichtenliste konnte nicht abgerufen werden.")?;
         for fetch in data.iter() {
             if let (Some(uid), Some(header)) = (fetch.uid, fetch.header()) {
-                messages.push(parse_header(
+                let mut message = parse_header(
                     header,
                     uid,
                     !fetch
@@ -334,7 +340,9 @@ pub fn list(c: &Credentials, folder: &str) -> Result<Snapshot> {
                         .iter()
                         .any(|f| matches!(f, imap::types::Flag::Flagged)),
                     fetch.size.unwrap_or(0),
-                )?);
+                )?;
+                message.tags = tags_from_flags(fetch.flags());
+                messages.push(message);
             }
         }
     }
@@ -404,11 +412,12 @@ pub fn read(c: &Credentials, folder: &str, uid: u32, validity: u32) -> Result<(M
         size,
     )?;
     populate_body(&mut mail, raw)?;
+    mail.tags = tags_from_flags(fetch.flags());
     let _ = session.logout();
     Ok((mail, raw.to_vec()))
 }
 
-pub const BODY_VERSION: u8 = 1;
+pub const BODY_VERSION: u8 = 2;
 
 pub fn populate_body(mail: &mut Mail, raw: &[u8]) -> Result<()> {
     let (body, files) = decode_content(raw)?;
@@ -418,6 +427,7 @@ pub fn populate_body(mail: &mut Mail, raw: &[u8]) -> Result<()> {
     mail.html = None;
     mail.html_warning = body.warning;
     mail.links.clear();
+    mail.remote_images.clear();
     if let Some(source) = body.html {
         match crate::html::render(&source) {
             Ok(rendered) => {
@@ -426,6 +436,7 @@ pub fn populate_body(mail: &mut Mail, raw: &[u8]) -> Result<()> {
                 }
                 mail.html = Some(rendered.html);
                 mail.links = rendered.links;
+                mail.remote_images = rendered.remote_images;
             }
             Err(error) => mail.html_warning = Some(error),
         }
@@ -601,6 +612,75 @@ fn collect_parts(
         html,
         warning,
     })
+}
+
+pub(crate) fn tags_from_flags(flags: &[imap::types::Flag<'_>]) -> Vec<u8> {
+    (1..=4)
+        .filter(|tag| flags.iter().any(|flag| matches!(flag,
+            imap::types::Flag::Custom(keyword) if keyword.eq_ignore_ascii_case(&format!("$label{tag}"))
+        )))
+        .collect()
+}
+
+fn tag_keywords(tag: u8, value: bool) -> Result<String> {
+    match tag {
+        0 if !value => Ok("$label1 $label2 $label3 $label4".into()),
+        1..=4 => Ok(format!("$label{tag}")),
+        _ => Err("Unbekannte Farbmarkierung.".into()),
+    }
+}
+
+pub fn set_tag(
+    c: &Credentials,
+    folder: &str,
+    uid: u32,
+    validity: u32,
+    tag: u8,
+    value: bool,
+) -> Result<Vec<u8>> {
+    validate_folder(folder)?;
+    tag_keywords(tag, value)?;
+    let mut session = connect(c)?;
+    let result = set_tag_on(&mut session, folder, uid, validity, tag, value);
+    let _ = session.logout();
+    result
+}
+
+fn set_tag_on<T: std::io::Read + std::io::Write>(
+    session: &mut imap::Session<T>,
+    folder: &str,
+    uid: u32,
+    validity: u32,
+    tag: u8,
+    value: bool,
+) -> Result<Vec<u8>> {
+    validate_folder(folder)?;
+    let keywords = tag_keywords(tag, value)?;
+    let mailbox = session
+        .select(folder)
+        .map_err(|_| "Ordner konnte nicht zum Schreiben geöffnet werden.")?;
+    verify_validity(mailbox.uid_validity, validity, uid)?;
+    if value && !mailbox.permanent_flags.iter().any(|flag|
+        matches!(flag, imap::types::Flag::MayCreate) ||
+        matches!(flag, imap::types::Flag::Custom(keyword) if keyword.eq_ignore_ascii_case(&keywords))) {
+        return Err("Dieser Server unterstützt keine dauerhaften Farbmarkierungen.".into());
+    }
+    // Modify only our keywords; preserve Seen, Flagged and all other clients' tags.
+    let data = session
+        .uid_store(
+            uid.to_string(),
+            format!("{}FLAGS ({keywords})", if value { "+" } else { "-" }),
+        )
+        .map_err(|_| "Farbmarkierung konnte nicht gespeichert werden.")?;
+    let fetch = data
+        .iter()
+        .find(|fetch| fetch.uid == Some(uid))
+        .ok_or("Nachricht wurde verschoben oder gelöscht.")?;
+    let tags = tags_from_flags(fetch.flags());
+    if (tag == 0 && !tags.is_empty()) || (tag != 0 && tags.contains(&tag) != value) {
+        return Err("Der Server hat die Farbmarkierung nicht übernommen.".into());
+    }
+    Ok(tags)
 }
 
 pub fn set_flag(
@@ -780,6 +860,79 @@ pub fn probe_caldav(url: &str) -> Result<String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    #[test]
+    fn tags_are_sorted_case_insensitive_and_legacy_messages_default_to_untagged() {
+        use imap::types::Flag;
+        assert_eq!(
+            tags_from_flags(&[
+                Flag::Custom("$LABEL4".into()),
+                Flag::Seen,
+                Flag::Flagged,
+                Flag::Custom("$label1".into()),
+                Flag::Custom("$label5".into()),
+                Flag::Custom("$label1".into()),
+                Flag::Custom("project".into()),
+            ]),
+            vec![1, 4]
+        );
+        assert!(tag_keywords(5, true).is_err());
+        assert!(tag_keywords(0, true).is_err());
+        let original = parse_header(b"Subject: test\r\n\r\n", 9, true, false, 20).unwrap();
+        let mut legacy = serde_json::to_value(original).unwrap();
+        legacy.as_object_mut().unwrap().remove("tags");
+        assert!(serde_json::from_value::<Mail>(legacy)
+            .unwrap()
+            .tags
+            .is_empty());
+    }
+
+    #[test]
+    fn tag_store_only_changes_requested_keywords_and_returns_server_flags() {
+        let (mut session, server) = crate::folders::tests::fixture(vec![
+            ("SELECT \"INBOX\"".into(), "* OK [UIDVALIDITY 4] stable\r\n* OK [PERMANENTFLAGS (\\Seen \\Flagged \\*)] flags\r\n".into()),
+            ("UID STORE 9 +FLAGS ($label2)".into(), "* 1 FETCH (UID 9 FLAGS (\\Seen \\Flagged $label1 $label2 project))\r\n".into()),
+            ("SELECT \"INBOX\"".into(), "* OK [UIDVALIDITY 4] stable\r\n".into()),
+            ("UID STORE 9 -FLAGS ($label1 $label2 $label3 $label4)".into(), "* 1 FETCH (UID 9 FLAGS (\\Seen \\Flagged project))\r\n".into()),
+        ]);
+        assert_eq!(
+            set_tag_on(&mut session, "INBOX", 9, 4, 2, true).unwrap(),
+            vec![1, 2]
+        );
+        assert!(set_tag_on(&mut session, "INBOX", 9, 4, 0, false)
+            .unwrap()
+            .is_empty());
+        drop(session);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn tag_store_rejects_uid_resets_and_servers_without_keyword_support() {
+        for (validity, flags) in [(5, "\\*"), (4, "\\Seen \\Flagged")] {
+            let (mut session, server) = crate::folders::tests::fixture(vec![
+                ("SELECT \"INBOX\"".into(), format!("* OK [UIDVALIDITY {validity}] stable\r\n* OK [PERMANENTFLAGS ({flags})] flags\r\n")),
+            ]);
+            assert!(set_tag_on(&mut session, "INBOX", 9, 4, 1, true).is_err());
+            drop(session);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn tag_store_does_not_claim_success_for_missing_messages_or_ignored_keywords() {
+        for response in ["", "* 1 FETCH (UID 9 FLAGS (\\Seen))\r\n"] {
+            let (mut session, server) = crate::folders::tests::fixture(vec![
+                (
+                    "SELECT \"INBOX\"".into(),
+                    "* OK [UIDVALIDITY 4] stable\r\n* OK [PERMANENTFLAGS (\\*)] flags\r\n".into(),
+                ),
+                ("UID STORE 9 +FLAGS ($label1)".into(), response.into()),
+            ]);
+            assert!(set_tag_on(&mut session, "INBOX", 9, 4, 1, true).is_err());
+            drop(session);
+            server.join().unwrap();
+        }
+    }
+
     pub(crate) fn account() -> Account {
         Account {
             name: "Test".into(),

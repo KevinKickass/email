@@ -1,6 +1,6 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { Settings, X } from "lucide-react";
-import { usePreferences, type Language } from "./preferences";
+import { usePreferences, type Language, type Theme } from "./preferences";
 import { useI18n } from "./i18n";
 import type { useUpdates } from "./updates";
 import { version } from "../package.json";
@@ -50,6 +50,23 @@ export default function SettingsDialog({
           </button>
         </div>
         <div className="settings-content">
+          <h2>{t("Darstellung")}</h2>
+          <label className="language-field">
+            {t("Farbschema")}
+            <select
+              value={settings.theme}
+              disabled={!ready || saving}
+              onChange={(e) =>
+                void save({ ...settings, theme: e.target.value as Theme })
+              }
+            >
+              <option value="system">
+                {t("Automatisch (Systemdarstellung)")}
+              </option>
+              <option value="light">{t("Hell")}</option>
+              <option value="dark">{t("Dunkel")}</option>
+            </select>
+          </label>
           <h2>{t("Sprache")}</h2>
           <label className="language-field">
             {t("Sprache der Oberfläche")}

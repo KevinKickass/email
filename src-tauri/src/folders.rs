@@ -140,7 +140,7 @@ pub fn append_on<T: Read + Write>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     #[test]
     fn modified_utf7_preserves_wire_names_and_handles_invalid_input() {
@@ -151,7 +151,7 @@ mod tests {
         assert!(quoted_inner("x\r\nLOGOUT").is_err());
     }
 
-    fn fixture(
+    pub(crate) fn fixture(
         steps: Vec<(String, String)>,
     ) -> (
         imap::Session<std::net::TcpStream>,
