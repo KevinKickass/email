@@ -283,7 +283,7 @@ pub fn cached_raw(
         .transpose()
 }
 // Upgrade cached MIME without credentials or any network access. Keep headers and
-// explicit local read/flag changes; only rebuild the body and attachment metadata.
+// explicit local read/flag changes; rebuild body/attachment metadata and recover Cc.
 pub fn upgrade_cached(
     store: &Store,
     account: &str,
@@ -291,7 +291,7 @@ pub fn upgrade_cached(
     validity: u32,
     mut message: mail::Mail,
 ) -> Result<Option<mail::Mail>> {
-    if message.body_version == mail::BODY_VERSION {
+    if message.body_version == mail::BODY_VERSION && message.cc.is_some() {
         return Ok(Some(message));
     }
     let Some(raw) = cached_raw(store, account, folder, validity, message.uid)? else {

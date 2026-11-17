@@ -140,6 +140,8 @@ pub struct Mail {
     pub uid: u32,
     pub from: String,
     pub reply_to: String,
+    #[serde(default)]
+    pub cc: Option<String>,
     pub to: String,
     pub subject: String,
     pub date: String,
@@ -280,6 +282,7 @@ fn parse_header(raw: &[u8], uid: u32, unread: bool, flagged: bool, size: u32) ->
         from: get("From"),
         reply_to: get("Reply-To"),
         to: get("To"),
+        cc: Some(get("Cc")),
         subject: {
             let s = get("Subject");
             if s.is_empty() {
@@ -323,7 +326,7 @@ pub fn list(c: &Credentials, folder: &str) -> Result<Snapshot> {
         let data = session
             .fetch(
                 range,
-                "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (FROM REPLY-TO TO SUBJECT DATE)])",
+                "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (FROM REPLY-TO TO CC SUBJECT DATE)])",
             )
             .map_err(|_| "Nachrichtenliste konnte nicht abgerufen werden.")?;
         for fetch in data.iter() {
@@ -421,6 +424,8 @@ pub const BODY_VERSION: u8 = 2;
 
 pub fn populate_body(mail: &mut Mail, raw: &[u8]) -> Result<()> {
     let (body, files) = decode_content(raw)?;
+    let (headers, _) = mailparse::parse_headers(raw).map_err(|e| e.to_string())?;
+    mail.cc = Some(headers.get_first_value("Cc").unwrap_or_default());
     mail.attachments = files.iter().map(|f| f.name.clone()).collect();
     mail.attachment_sizes = files.iter().map(|f| f.data.len() as u64).collect();
     mail.body = body.plain.filter(|text| !text.trim().is_empty());
@@ -756,10 +761,8 @@ pub(crate) fn build_message(
         ))
         .subject(&draft.subject)
         .message_id(Some(format!("<{}@email.local>", draft.id)));
-    for recipient in draft.to.split(',').map(str::trim) {
-        builder = builder.to(recipient.parse().map_err(|_| {
-            "Eine Empfängeradresse ist ungültig. Mehrere Adressen mit Komma trennen."
-        })?);
+    for recipient in recipients(&draft.to)? {
+        builder = builder.to(recipient);
     }
     if attachments.is_empty() {
         builder
@@ -778,21 +781,58 @@ pub(crate) fn build_message(
     .map_err(|_| "Nachricht konnte nicht erstellt werden.".into())
 }
 
+// Split only outside display names, comments and angle addresses. A colon after
+// a group name starts an RFC address group; after an address it is a separator.
+fn recipients(input: &str) -> Result<Vec<Mailbox>> {
+    let mut entries = Vec::new();
+    let mut token = String::new();
+    let (mut quoted, mut escaped, mut angle, mut comment) = (false, false, false, 0u32);
+    for ch in input.chars() {
+        if escaped {
+            token.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && (quoted || comment > 0) {
+            escaped = true;
+        } else if ch == '"' && comment == 0 {
+            quoted = !quoted;
+        } else if !quoted {
+            match ch {
+                '(' => comment += 1,
+                ')' => comment = comment.saturating_sub(1),
+                '<' if comment == 0 => angle = true,
+                '>' if comment == 0 => angle = false,
+                ',' | ';' | ':' if !angle && comment == 0 => {
+                    if (ch != ':' || token.contains('@')) && !token.trim().is_empty() {
+                        entries.push(token.trim().to_string());
+                    }
+                    token.clear();
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        token.push(ch);
+    }
+    if !token.trim().is_empty() {
+        entries.push(token.trim().to_string());
+    }
+    if quoted || angle || comment > 0 || escaped || entries.is_empty() {
+        return Err("Eine Empfängeradresse ist ungültig.".into());
+    }
+    entries.into_iter().map(|entry| entry.parse::<Mailbox>().map_err(|_| "Eine Empfängeradresse ist ungültig. Mehrere Adressen mit Komma, Semikolon oder Doppelpunkt trennen.".into())).collect()
+}
+
 pub(crate) fn envelope(a: &Account, draft: &Draft) -> Result<lettre::address::Envelope> {
     let from = a
         .email
         .parse()
         .map_err(|_| "Absenderadresse ist ungültig.")?;
-    let recipients = draft
-        .to
-        .split(',')
-        .map(|s| {
-            s.trim().parse::<Mailbox>().map(|m| m.email).map_err(|_| {
-                "Eine Empfängeradresse ist ungültig. Mehrere Adressen mit Komma trennen."
-                    .to_string()
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let recipients = recipients(&draft.to)?
+        .into_iter()
+        .map(|m| m.email)
+        .collect();
     lettre::address::Envelope::new(Some(from), recipients)
         .map_err(|_| "Empfänger und Betreff sind erforderlich.".into())
 }
@@ -860,6 +900,32 @@ pub fn probe_caldav(url: &str) -> Result<String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    #[test]
+    fn recipient_separators_preserve_names_and_match_the_smtp_envelope() {
+        for to in [
+            "one@example.org; two@example.org: three@example.org,",
+            "Team: one@example.org, two@example.org, three@example.org;",
+            "\"Doe, Jane; Team: A\" <one@example.org>; two@example.org: three@example.org",
+        ] {
+            let mut draft = crate::outbox::tests::draft();
+            draft.to = to.into();
+            let message = build_message(&account(), &draft, &[]).unwrap();
+            assert_eq!(message.envelope().to().len(), 3);
+            assert_eq!(envelope(&account(), &draft).unwrap(), *message.envelope());
+        }
+        assert!(recipients("bad address; good@example.org").is_err());
+        assert!(recipients("; : ;").is_err());
+        assert!(recipients("\"Unclosed <a@example.org>").is_err());
+    }
+    #[test]
+    fn cc_headers_are_loaded_and_recovered_from_cached_mime() {
+        let raw = b"From: sender@example.org\r\nCc: copy@example.org\r\n\r\nText";
+        let mut mail = parse_header(raw, 1, false, false, 0).unwrap();
+        assert_eq!(mail.cc.as_deref(), Some("copy@example.org"));
+        mail.cc = None;
+        populate_body(&mut mail, raw).unwrap();
+        assert_eq!(mail.cc.as_deref(), Some("copy@example.org"));
+    }
     #[test]
     fn tags_are_sorted_case_insensitive_and_legacy_messages_default_to_untagged() {
         use imap::types::Flag;

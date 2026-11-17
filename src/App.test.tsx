@@ -91,6 +91,50 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe("offline drafts and delivery", () => {
+  it("opens a reply-all draft from the toolbar", async () => {
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command, args) =>
+      command === "read_message"
+        ? Promise.resolve({
+            uid: 1,
+            from: "a@example.org",
+            replyTo: "reply@example.org",
+            to: account.email + ", other@example.org",
+            cc: "cc@example.org",
+            subject: "Cached email",
+            body: "Text",
+          })
+        : original(command, args),
+    );
+    mount();
+    fireEvent.click(await screen.findByText("Cached email"));
+    await waitFor(() =>
+      expect(
+        (
+          screen.getAllByRole("button", {
+            name: "Reply all",
+          })[0] as HTMLButtonElement
+        ).disabled,
+      ).toBe(false),
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "Reply all" })[0]);
+    expect(
+      (screen.getByRole("textbox", { name: "To" }) as HTMLInputElement).value,
+    ).toBe("reply@example.org, other@example.org, cc@example.org");
+    expect(
+      (screen.getByRole("textbox", { name: "Subject" }) as HTMLInputElement)
+        .value,
+    ).toBe("Re: Cached email");
+    const to = screen.getByRole("textbox", { name: "To" }) as HTMLInputElement;
+    fireEvent.change(to, {
+      target: { value: "one@example.org; two@example.org: three@example.org" },
+    });
+    expect(to.value).toBe(
+      "one@example.org; two@example.org: three@example.org",
+    );
+    expect(to.checkValidity()).toBe(true);
+  });
+
   it("opens cached mail without forcing setup or accessing credentials", async () => {
     mount();
     await screen.findByText("Cached email");

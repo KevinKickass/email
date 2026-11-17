@@ -22,6 +22,7 @@ export interface Mail {
   uid: number;
   from: string;
   replyTo: string;
+  cc?: string | null;
   to: string;
   subject: string;
   date: string;
@@ -204,4 +205,27 @@ export function shortDate(date: string, locale = "de-DE") {
   return d.toDateString() === today.toDateString()
     ? d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })
     : d.toLocaleDateString(locale, { day: "2-digit", month: "2-digit" });
+}
+
+// Keep display-name commas inside quoted names/angle addresses while splitting lists.
+export function replyAllRecipients(message: Mail, ownAddress: string): string {
+  const seen = new Set([ownAddress.trim().toLowerCase()]);
+  const recipients: string[] = [];
+  for (const header of [
+    message.replyTo || message.from,
+    message.to,
+    message.cc || "",
+  ]) {
+    const entries =
+      header.match(/(?:[^,;"<]|"(?:\\.|[^"\\])*"|<[^>]*>)+/g) || [];
+    for (const entry of entries) {
+      const address = emailAddress(entry)
+        .trim()
+        .replace(/^[^<>@]*:\s*/, "");
+      if (!address.includes("@") || seen.has(address.toLowerCase())) continue;
+      seen.add(address.toLowerCase());
+      recipients.push(address);
+    }
+  }
+  return recipients.join(", ");
 }

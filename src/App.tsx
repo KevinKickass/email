@@ -29,6 +29,7 @@ import {
   ChevronLeft,
   Search,
   Reply,
+  ReplyAll,
   Forward,
   RefreshCw,
   Flag,
@@ -59,6 +60,7 @@ import {
   demoMail,
   senderName,
   emailAddress,
+  replyAllRecipients,
   shortDate,
 } from "./model";
 
@@ -535,7 +537,7 @@ export default function App() {
     }
   }
 
-  async function compose(mode: "new" | "reply" | "forward") {
+  async function compose(mode: "new" | "reply" | "replyAll" | "forward") {
     if (live.current.attachmentBusy) return;
     setDraftSaved(false);
     setError("");
@@ -543,8 +545,12 @@ export default function App() {
     const next = blankDraft();
     if (mode !== "new" && message) {
       next.to =
-        mode === "reply" ? emailAddress(message.replyTo || message.from) : "";
-      next.subject = `${mode === "reply" ? "Re" : "Fwd"}: ${message.subject.replace(/^(Re|Fwd):\s*/i, "")}`;
+        mode === "replyAll"
+          ? replyAllRecipients(message, account?.email ?? "")
+          : mode === "reply"
+            ? emailAddress(message.replyTo || message.from)
+            : "";
+      next.subject = `${mode !== "forward" ? "Re" : "Fwd"}: ${message.subject.replace(/^(Re|Fwd):\s*/i, "")}`;
       next.body = `\n\n──────── ${t("Ursprüngliche Nachricht")} ────────\n${t("Von:")} ${message.from}\n${t("Betreff")}: ${message.subject}\n\n${message.body ?? ""}`;
     }
     if (mode === "forward" && !demo && account && message) {
@@ -1011,6 +1017,20 @@ export default function App() {
                 </Tool>
                 <Tool
                   large
+                  icon={
+                    <ReplyAll
+                      size={30}
+                      className="purple-icon"
+                      aria-hidden="true"
+                    />
+                  }
+                  disabled={!message}
+                  onClick={() => void compose("replyAll")}
+                >
+                  {t("Allen antworten")}
+                </Tool>
+                <Tool
+                  large
                   icon={<Forward size={30} className="blue-icon" />}
                   disabled={!message}
                   onClick={() => void compose("forward")}
@@ -1425,6 +1445,10 @@ export default function App() {
                           <Reply size={16} />
                           {t("Antworten")}{" "}
                         </button>
+                        <button onClick={() => void compose("replyAll")}>
+                          <ReplyAll size={16} aria-hidden="true" />
+                          {t("Allen antworten")}
+                        </button>
                         <button onClick={() => void compose("forward")}>
                           <Forward size={16} />
                           {t("Weiterleiten")}{" "}
@@ -1694,8 +1718,8 @@ export default function App() {
                 <span>{t("An")} </span>
                 <input
                   required
-                  type="email"
-                  multiple
+                  type="text"
+                  inputMode="email"
                   value={draft.to}
                   placeholder={t("empfaenger@beispiel.de")}
                   disabled={sendBusy || attachmentBusy}
