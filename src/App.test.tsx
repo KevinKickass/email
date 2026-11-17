@@ -647,7 +647,11 @@ describe("numbered color tags", () => {
       }
       return original(command, args);
     });
-    mount();
+    // Flush startup state and passive effects before sending a one-shot shortcut.
+    // Finding cached text alone can resolve before the keyboard handler is updated.
+    await act(async () => {
+      mount();
+    });
     await screen.findByText("Cached email");
     fireEvent.keyDown(window, { key: "F5" });
     await waitFor(() =>
